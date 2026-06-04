@@ -12,3 +12,11 @@
 | **Best suited for MSF needs**    | Centralized analytics, reporting, research, and decision-making                | Operational monitoring or real-time alerting scenarios         |
 | **Main risk if skipped**         | Reprocessing needed when models change                                         | Loss of original data → compliance and audit risks             |
 | **Sensitivity handling**         | Better control, encryption, and governance in centralized system               | Riskier due to distributed transformations                     |
+
+
+ELT is the best fit because:
+
+Requires auditability & raw data preservation (medical data)
+Needs flexible analytics at HQ
+Handles multi-source global data (400 sites) efficiently
+Works well with cloud-based centralized architecture
