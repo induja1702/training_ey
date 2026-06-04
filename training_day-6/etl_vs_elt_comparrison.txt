@@ -1,0 +1,14 @@
+| **Dimension**                    | **ELT (Recommended for MSF)**                                                  | **ETL (Alternative for MSF)**                                  |
+| -------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| **Where transformation happens** | Inside centralized cloud warehouse (e.g., Snowflake using dbt after loading)   | Pre-processing at field/stream level before storing data       |
+| **Raw data preserved?**          | Yes — all raw clinic, inventory, and outbreak data stored for audit and replay | No — raw data transformed and original data may be lost        |
+| **Latency profile**              | Batch / near real-time (suitable for HQ analytics and reporting)               | Real-time (useful if immediate alerts from field are required) |
+| **Transformation rigidity**      | Flexible — HQ analysts can update models as requirements evolve                | Rigid — predefined transformations across all field sites      |
+| **Compute location**             | Central cloud infrastructure (Geneva HQ analytics hub)                         | Distributed processing (edge locations or streaming clusters)  |
+| **Cost driver**                  | Low-cost storage + on-demand compute scaling                                   | Continuous compute cost for streaming/processing systems       |
+| **Data governance & audit**      | Strong — critical for sensitive patient and medical records                    | Weaker — difficult to trace back original raw data             |
+| **Multi-source data handling**   | Easily integrates 400 field sites into one unified platform                    | Complex preprocessing needed across multiple sources           |
+| **Scalability**                  | Highly scalable using cloud infrastructure                                     | Scaling requires managing distributed processing systems       |
+| **Best suited for MSF needs**    | Centralized analytics, reporting, research, and decision-making                | Operational monitoring or real-time alerting scenarios         |
+| **Main risk if skipped**         | Reprocessing needed when models change                                         | Loss of original data → compliance and audit risks             |
+| **Sensitivity handling**         | Better control, encryption, and governance in centralized system               | Riskier due to distributed transformations                     |

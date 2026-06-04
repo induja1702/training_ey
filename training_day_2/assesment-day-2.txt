@@ -1,0 +1,63 @@
+Anomaly detection in invoices
+
+              Model  - Unsupervised  K-means
+
+              primary metrics - Recall
+
+              why this metrics - Missing anomalies (fraud/errors) is costly, so we prioritize catching all anomalies
+
+
+
+
+
+Spam classification in audit emails
+
+              Model  - Classification (Logistic Regression / Random Forest)
+
+              primary metrics  - Precision / F1-score
+
+              why this metrics - False positives (important emails marked as spam) must be minimized
+
+
+
+
+
+Predicting deal close probability
+
+             Model - Classification (Logistic Regression / Gradient Boosting)
+
+              Primary metrics - ROC
+
+              why this metrics - Measures how well the model separates “close” vs “not close” deals
+
+
+
+
+
+Summarising 100-page contracts
+
+             Model - NLP (Text Summarization – Transformers/LLMs)
+
+              Primary metrics -
+
+              why this metrics - Evaluates how well the summary matches important content
+
+
+
+Translating audit reports
+
+             Model - NLP (Transformers)
+
+              Primary metrics -
+
+              why this metrics -
+
+
+
+Flagging revenue forecasting errors
+
+              Model - Anomaly Detection / Regression-based
+
+              Primary metrics - Recall
+
+              why this metrics - catch all errors
