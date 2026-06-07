@@ -1,0 +1,10 @@
+2026-06-07 13:33:38.720 | INFO     | __main__:<module>:38 - Config loaded — schedule: 0 6 * * * | output: data\processed
+2026-06-07 13:34:22.450 | INFO     | __main__:<module>:38 - Config loaded — schedule: 0 6 * * * | output: data\processed
+2026-06-07 13:34:31.624 | INFO     | __main__:read:52 - Generated 1,000 synthetic rows (seed=42)
+2026-06-07 13:34:39.936 | INFO     | __main__:validate_batch:55 - Validation: 989 valid | 11 errors | 98.9% pass rate
+2026-06-07 13:36:51.328 | INFO     | __main__:<module>:38 - Config loaded — schedule: 0 6 * * * | output: data\processed
+2026-06-07 13:36:56.210 | INFO     | __main__:read:52 - Generated 1,000 synthetic rows (seed=42)
+2026-06-07 13:37:04.077 | INFO     | __main__:validate_batch:55 - Validation: 989 valid | 11 errors | 98.9% pass rate
+2026-06-07 13:56:11.891 | INFO     | __main__:<module>:38 - Config loaded — schedule: 0 6 * * * | output: data\processed
+2026-06-07 13:56:23.492 | INFO     | __main__:read:52 - Generated 1,000 synthetic rows (seed=42)
+2026-06-07 13:56:36.306 | INFO     | __main__:validate_batch:55 - Validation: 989 valid | 11 errors | 98.9% pass rate
