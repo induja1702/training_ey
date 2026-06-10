@@ -1,0 +1,27 @@
+# =============================================================================
+# requirements.txt — Semantic Search + Evaluation Metrics
+# =============================================================================
+# Install all dependencies with:
+#   pip install -r requirements.txt
+#
+# Python >= 3.8 recommended.
+# For GPU-accelerated embedding (optional), install PyTorch with CUDA first:
+#   https://pytorch.org/get-started/locally/
+# =============================================================================
+
+# Core search libraries
+sentence-transformers>=2.7.0    # bi-encoder embeddings (all-MiniLM-L6-v2)
+rank-bm25>=0.2.2                # BM25Okapi sparse retrieval
+
+# Numerical / scientific
+numpy>=1.24.0                   # array ops, argsort, mean
+
+# sentence-transformers pulls these in transitively, listed explicitly
+# for reproducibility:
+torch>=2.0.0                    # tensor ops & cosine similarity (util.cos_sim)
+transformers>=4.38.0            # HuggingFace model loading
+huggingface-hub>=0.22.0         # model downloading
+
+# Standard-library modules used (no install needed):
+#   math   — log2 for DCG discount
+#   (no other third-party deps required for the evaluation extension)
