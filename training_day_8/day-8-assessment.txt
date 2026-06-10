@@ -58,7 +58,7 @@ Notification Hub----Sends SMS, email, push notifications.
  
 
  
-
+BLOCK DIAGRAM
  
 
 [Merchant API]
@@ -115,3 +115,52 @@ Application Gateway or Load Balancer
 | 5 | Legacy SOAP lab service       | **Load Balancer**       | TCP only + no inspection + simple failover       |
 
 | 6 | Admin dashboard (hostname)    | **Application Gateway** | Host-based routing + HTTPS                       |
+
+
+BLOCK DIAGRAM
+
+Internet Users
+
+   |
+
+   v
+
+Public DNS
+
+(site1.com, site2.com)
+
+   |
+
+   v
+
+Azure Application Gateway
+
+   |-- Listener: site1.com  ---> Rule ---> Backend Pool 1
+
+   |                                      |
+
+   |                                      v
+
+   |                              Azure Load Balancer (optional)
+
+   |                                      |
+
+   |                                      v
+
+   |                              Site 1 App Servers / VMSS
+
+   |
+
+   |-- Listener: site2.com  ---> Rule ---> Backend Pool 2
+
+                                          |
+
+                                          v
+
+                                  Azure Load Balancer (optional)
+
+                                          |
+
+                                          v
+
+                                  Site 2 App Servers / VMSS
