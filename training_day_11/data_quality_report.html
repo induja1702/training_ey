@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Data Formatting Quality Report</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600;700&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f1117;
+    --surface: #181c27;
+    --surface2: #1e2333;
+    --border: #2a3045;
+    --text: #e2e8f0;
+    --muted: #8892a4;
+    --accent: #5b8dee;
+    --red: #f87171;
+    --amber: #fbbf24;
+    --green: #34d399;
+    --purple: #a78bfa;
+    --cyan: #22d3ee;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 32px 24px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  /* HEADER */
+  .header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 24px;
+    margin-bottom: 32px;
+  }
+  .header-eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 6px;
+  }
+  .header-meta {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+
+  /* SCORE CARDS */
+  .scorecards {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card-label {
+    font-size: 11px;
+    font-family: var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .card-num {
+    font-size: 36px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .card-sub {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .card.consistency .card-label { color: var(--amber); }
+  .card.consistency .card-num { color: var(--amber); }
+  .card.compliance .card-label { color: var(--red); }
+  .card.compliance .card-num { color: var(--red); }
+  .card.precision .card-label { color: var(--purple); }
+  .card.precision .card-num { color: var(--purple); }
+  .card.anomaly .card-label { color: var(--cyan); }
+  .card.anomaly .card-num { color: var(--cyan); }
+
+  /* SECTION TITLE */
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    margin-top: 32px;
+  }
+  .section-title h2 {
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+  }
+  .badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .badge.consistency { background: rgba(251,191,36,0.15); color: var(--amber); border: 1px solid rgba(251,191,36,0.3); }
+  .badge.compliance  { background: rgba(248,113,113,0.15); color: var(--red);   border: 1px solid rgba(248,113,113,0.3); }
+  .badge.precision   { background: rgba(167,139,250,0.15); color: var(--purple);border: 1px solid rgba(167,139,250,0.3); }
+  .badge.anomaly     { background: rgba(34,211,238,0.15);  color: var(--cyan);  border: 1px solid rgba(34,211,238,0.3); }
+
+  /* FINDINGS TABLE */
+  .table-wrap { overflow-x: auto; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  thead th {
+    background: var(--surface2);
+    padding: 9px 12px;
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody tr { border-bottom: 1px solid var(--border); }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--surface); }
+  tbody td {
+    padding: 8px 12px;
+    vertical-align: top;
+  }
+  td.row-num { font-family: var(--mono); color: var(--muted); font-size: 11px; }
+  td.col-name { font-family: var(--mono); font-size: 11px; color: var(--accent); }
+  td.bad-value { font-family: var(--mono); font-size: 11px; }
+  td.issue { color: var(--text); }
+  .tag { display: inline-block; }
+
+  /* COLUMN PROFILE BAR */
+  .col-profile {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  .col-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .col-card-name {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+    margin-bottom: 10px;
+    font-weight: 600;
+  }
+  .col-issue-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 5px;
+    font-size: 12px;
+  }
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 5px;
+  }
+  .dot.red { background: var(--red); }
+  .dot.amber { background: var(--amber); }
+  .dot.purple { background: var(--purple); }
+  .dot.cyan { background: var(--cyan); }
+
+  /* REGEX SECTION */
+  .regex-grid {
+    display: grid;
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  .regex-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .regex-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .regex-field { font-size: 13px; font-weight: 600; color: #fff; }
+  pre {
+    background: #0a0d14;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--green);
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 6px 0;
+  }
+  .regex-desc { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+  /* SUMMARY BAR */
+  .summary-bar {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 32px;
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .summary-bar-label { font-size: 12px; color: var(--muted); margin-right: 4px; }
+  .summary-bar-val { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+
+  /* COLUMN BAR CHART */
+  .bar-chart { margin-bottom: 32px; }
+  .bar-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .bar-col-name { font-family: var(--mono); font-size: 11px; color: var(--muted); width: 100px; text-align: right; flex-shrink: 0; }
+  .bar-track { flex: 1; background: var(--surface); border-radius: 4px; height: 20px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; background: var(--accent); display: flex; align-items: center; padding-left: 8px; font-family: var(--mono); font-size: 10px; color: #fff; transition: width 0.6s; min-width: 20px; }
+  .bar-count { font-family: var(--mono); font-size: 11px; color: var(--muted); width: 20px; }
+
+  hr.divider { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-eyebrow">Data Quality Analysis</div>
+  <h1>Data Formatting Dimension Report</h1>
+  <div class="header-meta">Dataset: customers_toy.csv &nbsp;|&nbsp; 15 rows × 10 columns &nbsp;|&nbsp; 41 issues detected &nbsp;|&nbsp; Generated 2025</div>
+</div>
+
+<!-- SCORE CARDS -->
+<div class="scorecards">
+  <div class="card consistency">
+    <div class="card-label">Consistency</div>
+    <div class="card-num">22</div>
+    <div class="card-sub">Mixed formats, cross-row variation</div>
+  </div>
+  <div class="card compliance">
+    <div class="card-label">Compliance</div>
+    <div class="card-num">3</div>
+    <div class="card-sub">Pattern rule violations</div>
+  </div>
+  <div class="card precision">
+    <div class="card-label">Precision</div>
+    <div class="card-num">8</div>
+    <div class="card-sub">Currency / decimal irregularities</div>
+  </div>
+  <div class="card anomaly">
+    <div class="card-label">Anomalies</div>
+    <div class="card-num">8</div>
+    <div class="card-sub">Whitespace, case, hidden chars</div>
+  </div>
+</div>
+
+<!-- BAR CHART BY COLUMN -->
+<div class="section-title"><h2>Issues by Column</h2></div>
+<div class="bar-chart">
+  <div class="bar-row"><div class="bar-col-name">revenue</div><div class="bar-track"><div class="bar-fill" style="width:100%">8</div></div><div class="bar-count"></div></div>
+  <div class="bar-row"><div class="bar-col-name">status</div><div class="bar-track"><div class="bar-fill" style="width:87.5%">7</div></div></div>
+  <div class="bar-row"><div class="bar-col-name">full_name</div><div class="bar-track"><div class="bar-fill" style="width:75%">6</div></div></div>
+  <div class="bar-row"><div class="bar-col-name">phone</div><div class="bar-track"><div class="bar-fill" style="width:62.5%">5</div></div></div>
+  <div class="bar-row"><div class="bar-col-name">signup_date</div><div class="bar-track"><div class="bar-fill" style="width:50%">4</div></div></div>
+  <div class="bar-row"><div class="bar-col-name">country</div><div class="bar-track"><div class="bar-fill" style="width:50%">4</div></div></div>
+  <div class="bar-row"><div class="bar-col-name">email</div><div class="bar-track"><div class="bar-fill" style="width:37.5%">3</div></div></div>
+  <div class="bar-row"><div class="bar-col-name">dob</div><div class="bar-track"><div class="bar-fill" style="width:37.5%">3</div></div></div>
+  <div class="bar-row"><div class="bar-col-name">postal_code</div><div class="bar-track"><div class="bar-fill" style="width:12.5%">1</div></div></div>
+</div>
+
+<hr class="divider">
+
+<!-- FULL ERROR TABLE -->
+<div class="section-title"><h2>Complete Findings Table</h2><span class="badge consistency">41 total issues</span></div>
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr>
+      <th>Row</th>
+      <th>Column</th>
+      <th>Raw Value</th>
+      <th>Issue Description</th>
+      <th>Category</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td class="row-num">3</td><td class="col-name">full_name</td><td class="bad-value">jane doe</td><td>Not Title Case — all words start lowercase</td><td><span class="badge anomaly">Anomaly</span></td></tr>
+    <tr><td class="row-num">4</td><td class="col-name">full_name</td><td class="bad-value">BOB JOHNSON</td><td>All-caps words detected</td><td><span class="badge anomaly">Anomaly</span></td></tr>
+    <tr><td class="row-num">5</td><td class="col-name">full_name</td><td class="bad-value">"Alice Brown "</td><td>Trailing whitespace after name</td><td><span class="badge anomaly">Anomaly</span></td></tr>
+    <tr><td class="row-num">7</td><td class="col-name">full_name</td><td class="bad-value">"  Emily White"</td><td>Leading whitespace before name</td><td><span class="badge anomaly">Anomaly</span></td></tr>
+    <tr><td class="row-num">10</td><td class="col-name">full_name</td><td class="bad-value">"Tom Hardy "</td><td>Trailing whitespace after name</td><td><span class="badge anomaly">Anomaly</span></td></tr>
+    <tr><td class="row-num">12</td><td class="col-name">full_name</td><td class="bad-value">mark wilson</td><td>Not Title Case — lowercase throughout</td><td><span class="badge anomaly">Anomaly</span></td></tr>
+    <tr><td class="row-num">4</td><td class="col-name">email</td><td class="bad-value">bob.j@email</td><td>Missing TLD — no domain extension after host</td><td><span class="badge compliance">Compliance</span></td></tr>
+    <tr><td class="row-num">8</td><td class="col-name">email</td><td class="bad-value">d.lee@</td><td>Missing domain entirely after @</td><td><span class="badge compliance">Compliance</span></td></tr>
+    <tr><td class="row-num">12</td><td class="col-name">email</td><td class="bad-value">mark.wilson@email.COM</td><td>Uppercase characters in domain (.COM)</td><td><span class="badge anomaly">Anomaly</span></td></tr>
+    <tr><td class="row-num">3</td><td class="col-name">phone</td><td class="bad-value">800 555 0102</td><td>Space-delimited, missing country code</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">4</td><td class="col-name">phone</td><td class="bad-value">+1(800)555-0103</td><td>Parentheses around area code instead of dashes</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">6</td><td class="col-name">phone</td><td class="bad-value">18005550105</td><td>No separators — all digits concatenated</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">10</td><td class="col-name">phone</td><td class="bad-value">+44-20-7946-0958</td><td>UK format (different segment structure than US)</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">15</td><td class="col-name">phone</td><td class="bad-value">+48-22-555-0114</td><td>Polish format — non-US country code</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">3</td><td class="col-name">dob</td><td class="bad-value">15/04/1990</td><td>DD/MM/YYYY — European ordering, not ISO</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">5</td><td class="col-name">dob</td><td class="bad-value">Mar 5 1995</td><td>Natural-language month name, no zero-padding</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">9</td><td class="col-name">dob</td><td class="bad-value">05-18-1991</td><td>MM-DD-YYYY with dashes — ambiguous ordering</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">3</td><td class="col-name">country</td><td class="bad-value">usa</td><td>All-lowercase — should be "USA"</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">4</td><td class="col-name">country</td><td class="bad-value">U.S.A</td><td>Dotted abbreviation variant</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">5</td><td class="col-name">country</td><td class="bad-value">United States</td><td>Full name used instead of ISO country code</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">8</td><td class="col-name">country</td><td class="bad-value">usa</td><td>All-lowercase — should be "USA"</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">9</td><td class="col-name">postal_code</td><td class="bad-value">1006</td><td>Only 4 digits — US ZIP requires 5</td><td><span class="badge compliance">Compliance</span></td></tr>
+    <tr><td class="row-num">3</td><td class="col-name">revenue</td><td class="bad-value">1300.00</td><td>No currency symbol prefix</td><td><span class="badge precision">Precision</span></td></tr>
+    <tr><td class="row-num">4</td><td class="col-name">revenue</td><td class="bad-value">$975.5</td><td>Single decimal place — should be 2 (9.50)</td><td><span class="badge precision">Precision</span></td></tr>
+    <tr><td class="row-num">5</td><td class="col-name">revenue</td><td class="bad-value">$ 2100.75</td><td>Space between $ symbol and number</td><td><span class="badge precision">Precision</span></td></tr>
+    <tr><td class="row-num">7</td><td class="col-name">revenue</td><td class="bad-value">1200</td><td>No symbol and no decimal places</td><td><span class="badge precision">Precision</span></td></tr>
+    <tr><td class="row-num">10</td><td class="col-name">revenue</td><td class="bad-value">£1800.00</td><td>GBP symbol — inconsistent with USD baseline</td><td><span class="badge precision">Precision</span></td></tr>
+    <tr><td class="row-num">13</td><td class="col-name">revenue</td><td class="bad-value">¥9500.00</td><td>JPY/CNY symbol — foreign currency not normalised</td><td><span class="badge precision">Precision</span></td></tr>
+    <tr><td class="row-num">14</td><td class="col-name">revenue</td><td class="bad-value">$2250.5</td><td>Single decimal place — missing trailing zero</td><td><span class="badge precision">Precision</span></td></tr>
+    <tr><td class="row-num">15</td><td class="col-name">revenue</td><td class="bad-value">PLN 1650.00</td><td>Currency code prefix (PLN) instead of symbol</td><td><span class="badge precision">Precision</span></td></tr>
+    <tr><td class="row-num">3</td><td class="col-name">signup_date</td><td class="bad-value">01/20/2023</td><td>MM/DD/YYYY slash format</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">5</td><td class="col-name">signup_date</td><td class="bad-value">2023/03/05</td><td>ISO structure but slash separators instead of hyphens</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">8</td><td class="col-name">signup_date</td><td class="bad-value">April 5 2023</td><td>Natural-language full month name</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">15</td><td class="col-name">signup_date</td><td class="bad-value">14-11-2023</td><td>DD-MM-YYYY — day-first European ordering</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">3</td><td class="col-name">status</td><td class="bad-value">active</td><td>All-lowercase — expected "Active"</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">4</td><td class="col-name">status</td><td class="bad-value">ACTIVE</td><td>All-uppercase — expected "Active"</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">6</td><td class="col-name">status</td><td class="bad-value">active</td><td>All-lowercase — expected "Active"</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">10</td><td class="col-name">status</td><td class="bad-value">active</td><td>All-lowercase — expected "Active"</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">12</td><td class="col-name">status</td><td class="bad-value">"Active "</td><td>Trailing space after value</td><td><span class="badge anomaly">Anomaly</span></td></tr>
+    <tr><td class="row-num">14</td><td class="col-name">status</td><td class="bad-value">active</td><td>All-lowercase — expected "Active"</td><td><span class="badge consistency">Consistency</span></td></tr>
+    <tr><td class="row-num">16</td><td class="col-name">status</td><td class="bad-value">INACTIVE</td><td>All-uppercase — expected "Inactive"</td><td><span class="badge consistency">Consistency</span></td></tr>
+  </tbody>
+</table>
+</div>
+
+<hr class="divider">
+
+<!-- REGEX / PARSING RULES -->
+<div class="section-title"><h2>Standardisation Rules &amp; Regex Formulas</h2></div>
+<div class="regex-grid">
+
+  <div class="regex-card">
+    <div class="regex-card-header">
+      <div class="regex-field">full_name</div>
+      <span class="badge anomaly">Anomaly</span>
+    </div>
+    <div class="regex-desc">Trim whitespace, then apply Title Case. Validate at least two words, each starting with a capital letter.</div>
+    <pre># Python — clean and validate
+import re
+def clean_name(v):
+    v = v.strip()
+    v = ' '.join(w.capitalize() for w in v.split())
+    return v
+
+# Validation regex (Title Case, allows apostrophes & hyphens)
+VALID_NAME = re.compile(r"^[A-Z][a-zA-Z''\-]+(?: [A-Z][a-zA-Z''\-]+)+$")</pre>
+  </div>
+
+  <div class="regex-card">
+    <div class="regex-card-header">
+      <div class="regex-field">email</div>
+      <span class="badge compliance">Compliance</span>
+    </div>
+    <div class="regex-desc">Lowercase entire value, then validate. Flag rows where the domain or TLD is missing.</div>
+    <pre># Normalise
+email = email.strip().lower()
+
+# Validation regex (RFC 5321 simplified)
+VALID_EMAIL = re.compile(
+    r'^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$'
+)</pre>
+  </div>
+
+  <div class="regex-card">
+    <div class="regex-card-header">
+      <div class="regex-field">phone</div>
+      <span class="badge consistency">Consistency</span>
+    </div>
+    <div class="regex-desc">Strip all non-digit characters, then reformat to E.164 (+{CC}{subscriber}). For US numbers, default country code to 1.</div>
+    <pre># Strip to digits only
+digits = re.sub(r'\D', '', phone)
+
+# US: prepend "1" if 10 digits
+if len(digits) == 10:
+    digits = '1' + digits
+
+# Reformat to +1-NXX-NXX-XXXX
+REFORMAT = re.compile(r'^(\d{1})(\d{3})(\d{3})(\d{4})$')
+phone_clean = REFORMAT.sub(r'+\1-\2-\3-\4', digits)
+
+# Target pattern validation
+VALID_PHONE = re.compile(r'^\+\d{1,3}-\d{3,4}-\d{3,4}-\d{4}$')</pre>
+  </div>
+
+  <div class="regex-card">
+    <div class="regex-card-header">
+      <div class="regex-field">dob &amp; signup_date</div>
+      <span class="badge consistency">Consistency</span>
+    </div>
+    <div class="regex-desc">Parse all observed formats with pandas, then output as ISO 8601 (YYYY-MM-DD). Flag if parsing fails or date is logically impossible.</div>
+    <pre>import pandas as pd
+
+# Parse multiple formats automatically
+df['dob'] = pd.to_datetime(
+    df['dob'],
+    infer_datetime_format=True,   # handles "Mar 5 1995" etc.
+    dayfirst=False,               # set True for DD/MM/YYYY data
+    errors='coerce'               # NaT for unparseable rows
+).dt.strftime('%Y-%m-%d')
+
+# Validation regex for cleaned output
+VALID_DATE = re.compile(r'^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$')</pre>
+  </div>
+
+  <div class="regex-card">
+    <div class="regex-card-header">
+      <div class="regex-field">country</div>
+      <span class="badge consistency">Consistency</span>
+    </div>
+    <div class="regex-desc">Map all variants to ISO 3166-1 alpha-3 codes. Use a lookup dictionary for known aliases.</div>
+    <pre>COUNTRY_MAP = {
+    'usa': 'USA', 'u.s.a': 'USA', 'united states': 'USA',
+    'uk': 'GBR', 'united kingdom': 'GBR',
+    'china': 'CHN', 'mexico': 'MEX', 'poland': 'POL',
+}
+
+def normalise_country(v):
+    return COUNTRY_MAP.get(str(v).strip().lower(), v.strip().upper())
+
+# Post-clean validation (ISO 3166-1 alpha-3)
+VALID_COUNTRY = re.compile(r'^[A-Z]{3}$')</pre>
+  </div>
+
+  <div class="regex-card">
+    <div class="regex-card-header">
+      <div class="regex-field">postal_code</div>
+      <span class="badge compliance">Compliance</span>
+    </div>
+    <div class="regex-desc">US ZIP must be exactly 5 digits or ZIP+4 (9 digits with hyphen). Validate based on the normalised country column.</div>
+    <pre>US_ZIP   = re.compile(r'^\d{5}(-\d{4})?$')
+UK_POST  = re.compile(r'^[A-Z]{1,2}\d[A-Z\d]? ?\d[A-Z]{2}$', re.I)
+PL_POST  = re.compile(r'^\d{2}-\d{3}$')
+
+def validate_postal(country, postal):
+    postal = str(postal).strip()
+    if country == 'USA': return bool(US_ZIP.match(postal))
+    if country == 'GBR': return bool(UK_POST.match(postal))
+    if country == 'POL': return bool(PL_POST.match(postal))
+    return True  # unknown country — skip</pre>
+  </div>
+
+  <div class="regex-card">
+    <div class="regex-card-header">
+      <div class="regex-field">revenue</div>
+      <span class="badge precision">Precision</span>
+    </div>
+    <div class="regex-desc">Strip all currency symbols and spaces, convert to float, round to 2 d.p. Store numeric value only; keep original currency in a separate column if multi-currency is needed.</div>
+    <pre>CURRENCY_CHARS = re.compile(r'[\$£¥€]|PLN|USD|GBP|CNY', re.I)
+
+def parse_revenue(v):
+    v = str(v).strip()
+    v = CURRENCY_CHARS.sub('', v).strip()
+    return round(float(v), 2)
+
+df['revenue_usd'] = df['revenue'].apply(parse_revenue)
+
+# Validation: numeric 2 d.p.
+VALID_REVENUE = re.compile(r'^\d+\.\d{2}$')</pre>
+  </div>
+
+  <div class="regex-card">
+    <div class="regex-card-header">
+      <div class="regex-field">status</div>
+      <span class="badge consistency">Consistency</span>
+    </div>
+    <div class="regex-desc">Strip whitespace, apply Title Case, then validate against the allowed enumerated set.</div>
+    <pre>VALID_STATUSES = {'Active', 'Inactive', 'Pending', 'Suspended'}
+
+def normalise_status(v):
+    v = str(v).strip().capitalize()
+    if v not in VALID_STATUSES:
+        raise ValueError(f'Unexpected status: {v!r}')
+    return v
+
+# Regex for valid statuses (extend as needed)
+VALID_STATUS = re.compile(r'^(Active|Inactive|Pending|Suspended)$')</pre>
+  </div>
+
+</div>
+
+<hr class="divider">
+
+<!-- RECOMMENDATIONS -->
+<div class="section-title"><h2>Remediation Priority</h2></div>
+<div class="col-profile">
+  <div class="col-card">
+    <div class="col-card-name">🔴 Fix Immediately</div>
+    <div class="col-issue-item"><div class="dot red"></div><div><strong>email</strong> — 2 rows have structurally broken addresses (missing domain/TLD). Cannot deliver; must be corrected at source.</div></div>
+    <div class="col-issue-item"><div class="dot red"></div><div><strong>postal_code</strong> — C008 has a 4-digit ZIP; likely a data entry drop. Verify and zero-pad or correct.</div></div>
+    <div class="col-issue-item"><div class="dot red"></div><div><strong>revenue</strong> — Mixed currency symbols (£, ¥, PLN) with no exchange-rate context. Establish a base currency and conversion pipeline before any financial aggregation.</div></div>
+  </div>
+  <div class="col-card">
+    <div class="col-card-name">🟡 Standardise in ETL</div>
+    <div class="col-issue-item"><div class="dot amber"></div><div><strong>dob &amp; signup_date</strong> — 7 non-ISO date values across both columns. Apply <code>pd.to_datetime</code> with <code>infer_datetime_format=True</code> in the ingestion layer.</div></div>
+    <div class="col-issue-item"><div class="dot amber"></div><div><strong>phone</strong> — 5 non-standard formats. Strip-and-reformat to E.164 using the regex rule above.</div></div>
+    <div class="col-issue-item"><div class="dot amber"></div><div><strong>country</strong> — 4 variants all refer to "USA". Map to ISO 3166-1 alpha-3 at ingest.</div></div>
+  </div>
+  <div class="col-card">
+    <div class="col-card-name">🔵 Low-effort Cleanups</div>
+    <div class="col-issue-item"><div class="dot cyan"></div><div><strong>full_name</strong> — 3 whitespace anomalies: apply <code>.strip()</code>. 3 case issues: apply Title Case normalisation.</div></div>
+    <div class="col-issue-item"><div class="dot cyan"></div><div><strong>status</strong> — 5 case mismatches + 1 trailing space. Apply <code>.strip().capitalize()</code> and enum validation.</div></div>
+    <div class="col-issue-item"><div class="dot cyan"></div><div><strong>email</strong> — 1 uppercase domain (.COM). Apply <code>.lower()</code> globally.</div></div>
+  </div>
+  <div class="col-card">
+    <div class="col-card-name">📋 Process Controls to Add</div>
+    <div class="col-issue-item"><div class="dot purple"></div><div>Add input-layer validation (Great Expectations / Pandera) with the regex rules above to catch issues at ingestion, not post-hoc.</div></div>
+    <div class="col-issue-item"><div class="dot purple"></div><div>Enforce an <strong>enumerated set</strong> for <code>status</code> at the database or form level.</div></div>
+    <div class="col-issue-item"><div class="dot purple"></div><div>Store <code>revenue_raw</code> (original) and <code>revenue_usd</code> (normalised) as separate columns with <code>revenue_currency</code> for auditability.</div></div>
+    <div class="col-issue-item"><div class="dot purple"></div><div>Require phone numbers be entered with a country-code selector widget to eliminate format guessing.</div></div>
+  </div>
+</div>
+
+<div style="text-align:center; padding: 24px 0; color: var(--muted); font-family: var(--mono); font-size: 11px;">
+  Data Formatting Quality Report — 15 rows · 10 columns · 41 issues across 9 columns
+</div>
+
+</body>
+</html>
