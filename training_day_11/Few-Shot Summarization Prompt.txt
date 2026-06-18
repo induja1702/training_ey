@@ -1,0 +1,33 @@
+few_shot_summary_prompt = PromptTemplate(
+    input_variables=["earnings_text"],
+    template="""
+Example 1
+
+Input:
+Revenue increased 15% YoY. Net income rose 10%.
+Management expects strong demand next quarter.
+
+Output:
+• Revenue grew 15%
+• Profitability improved
+• Positive future outlook
+
+Example 2
+
+Input:
+Revenue declined 5%. Operating costs increased.
+Management announced restructuring plans.
+
+Output:
+• Revenue decreased
+• Costs increased
+• Restructuring planned
+
+Now summarize:
+
+Input:
+{earnings_text}
+
+Output:
+"""
+)

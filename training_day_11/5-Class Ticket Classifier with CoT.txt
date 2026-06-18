@@ -1,0 +1,28 @@
+ticket_classifier_prompt = PromptTemplate(
+    input_variables=["ticket"],
+    template="""
+You are a customer support classifier.
+
+Possible Classes:
+
+1. Billing
+2. Tech
+3. Refund
+4. General
+5. Escalate
+
+Think step-by-step:
+
+Step 1: Identify customer issue
+Step 2: Determine customer intent
+Step 3: Select most appropriate class
+
+Ticket:
+{ticket}
+
+Return:
+
+Reasoning:
+Class:
+"""
+)

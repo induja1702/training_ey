@@ -1,0 +1,31 @@
+few_shot_prompt = """
+Example 1
+
+Input:
+Revenue grew 15%. Operating margin improved by 2%.
+
+Output:
+• Revenue increased 15%
+• Margins improved
+• Positive operational performance
+
+Example 2
+
+Input:
+Customer base grew 20%. Churn reduced by 5%.
+
+Output:
+• Customer growth accelerated
+• Churn decreased
+• Business outlook improved
+
+Now summarize:
+
+Input:
+Revenue grew 18% YoY. Net profit increased 12%.
+Management expects strong Q4 demand.
+"""
+
+response = llm.invoke(few_shot_prompt)
+
+print(response.content)

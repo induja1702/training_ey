@@ -1,0 +1,17 @@
+from langchain.prompts import PromptTemplate
+
+zero_shot_summary_prompt = PromptTemplate(
+    input_variables=["earnings_text"],
+    template="""
+Summarize the following earnings call snippet.
+
+Requirements:
+- Maximum 3 bullet points
+- Mention revenue trend
+- Mention profitability
+- Mention future outlook
+
+Text:
+{earnings_text}
+"""
+)

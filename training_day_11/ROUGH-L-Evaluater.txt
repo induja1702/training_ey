@@ -1,0 +1,18 @@
+from rouge_score import rouge_scorer
+
+reference_summary = "Revenue increased and management provided positive guidance."
+
+generated_summary = "Revenue grew and outlook remains positive."
+
+scorer = rouge_scorer.RougeScorer(
+['rougeL'],
+use_stemmer=True
+)
+
+score = scorer.score(
+reference_summary,
+generated_summary
+)
+
+print("ROUGE-L F1:",
+score['rougeL'].fmeasure)
