@@ -1,0 +1,144 @@
+    Architecture
+
+  Clinical Documents
+        │
+        ▼
+Document Processing Pipeline
+(PDF, Guidelines, Protocols)
+        │
+        ▼
+Chunking + Metadata
+        │
+        ▼
+Azure OpenAI Embeddings
+        │
+        ▼
+Azure AI Search
+(Hybrid Search)
+        │
+        ▼
+Retriever
+        │
+        ▼
+Reranker (Cohere/Azure)
+        │
+        ▼
+GPT-4o / Claude
+        │
+        ▼
+Clinician Response
+
+
+Decision 1
+Azure AI Search vs Weaviate on AKS
+
+Azure AI Search
+Reason:
+Compliance
+Healthcare requires:
+HIPAA
+Audit logs
+Encryption
+Data residency
+
+Azure AI Search already integrates with:
+Azure OpenAI
+Azure Security
+Azure Monitor
+Azure IAM
+
+
+Weaviate Advantages
+More flexibility
+Open source
+Easier custom tuning
+
+Decision 2
+Chunk Size
+256 vs 1024 tokens
+
+Clinical documents contain:
+
+Tables
+Drug dosage
+Procedures
+Lists
+256 Tokens
+
+Pros:
+Precise retrieval
+Better recall
+
+Cons:
+Context fragmentation
+1024 Tokens
+
+Pros:
+Better context
+Cons:
+More irrelevant content
+
+
+Decision 3
+Claude Long Context vs Retrieval
+
+RAG 
+
+Query
+  ↓
+Retriever
+  ↓
+Top 10 Chunks
+  ↓
+LLM
+
+
+Skip RAG When?
+
+Only for:
+
+Small policy docs
+Few pages
+
+Decision 4
+Multi-Index Strategy
+
+Benefits:
+
+Faster
+Search space reduced.
+Better Accuracy
+Less noise.
+Lower Cost
+Less compute.
+
+Retrival Pipeline
+User Query
+      │
+      ▼
+Query Classifier
+      │
+      ├── Cardiology
+      ├── Oncology
+      ├── Neurology
+      ▼
+Correct Index
+      │
+      ▼
+Hybrid Search
+(BM25 + Vector)
+      │
+      ▼
+Top 50
+      │
+      ▼
+Reranker
+      │
+      ▼
+Top 5
+      │
+      ▼
+GPT-4o
+
+Health Care require both Vector(meaning match) & BM25(KEYWORD Match) so Hybrid seacrh prefred.
+
