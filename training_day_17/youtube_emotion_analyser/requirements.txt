@@ -1,0 +1,8 @@
+langgraph
+langchain
+langchain-openai
+openai
+deepface
+opencv-python
+numpy
+tensorflow

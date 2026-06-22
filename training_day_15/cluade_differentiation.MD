@@ -158,3 +158,5 @@ The fair verdict: defensible *if* management can show a clear path from this inv
 | Conciseness             | 9.5        | 8          | 8          |
 | Strategic Thinking      | 10         | 9          | 7.5        |
 | Overall Score           | **9.9/10** | **8.8/10** | **8.0/10** |
+
+
