@@ -1,0 +1,15 @@
+Customer Query: when can I get my refund?
+Issue Type: Refund
+Priority: High
+Response: We have registered your refund request. Our team will process it within 3 business days.
+
+Customer Query: I oreded an headset it is not working
+Issue Type: Product Question
+Priority: Low
+Response: Thank you for contacting us. We will provide product information shortly.
+
+Customer Query: There is a complaint the oredered product it's not working
+Issue Type: Complaint
+Priority: Medium
+Response: We apologize for the inconvenience. Your complaint has been logged and will be reviewed.
+
