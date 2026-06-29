@@ -5,7 +5,7 @@ from pydantic import BaseModel
 class UploadedFile(BaseModel):
     file_id: str
     original_name: str
-    saved_path: str
+    blob_url: str
     size_bytes: int
 
 
@@ -15,3 +15,12 @@ class UploadResponse(BaseModel):
     failed_count: int
     files: List[UploadedFile]
     errors: List[dict]
+
+class ChatRequest(BaseModel):
+    query: str
+
+
+class ChatResponse(BaseModel):
+    query: str
+    answer: str
+    sources: list[str]
