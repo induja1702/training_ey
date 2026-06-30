@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, status
 from openai import OpenAI
 from src.agents.agentic_rag import AgenticRAG
-from src.agents.intent_detection import detect_intent
+from src.agents.intent_detection import IntentDetector, Workflow
 from src.agents.knowledge_rag import KnowledgeRAG
 from src.retrival.doc_registry import list_documents
 from src.schema.validation import (
@@ -42,7 +42,7 @@ vector_store = FAISSVectorStore(
     index_dir="faiss_index",
     embedding_model=embedder.embedding_model,
 )
-
+intent_detector = IntentDetector()
 knowledge_rag = KnowledgeRAG(client=client, vector_store=vector_store, top_k=5)
 agentic_rag = AgenticRAG(client=client, vector_store=vector_store, top_k=5)
 
@@ -138,10 +138,13 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
         )
 
     start_time = time.perf_counter()
-    intent = detect_intent(query)
-    logger.info("Intent detected: %s (%.2f) - %s", intent.get("intent"), intent.get("confidence"), intent.get("reason"))
+    intent = intent_detector.detect(query)
+    logger.info(
+        "Intent detected: %s (%.2f) - %s",
+        intent.workflow.value, intent.confidence, intent.reason
+    )
 
-    if intent.get("intent") == "simple":
+    if intent.workflow == Workflow.KNOWLEDGE_RAG:
         docs = knowledge_rag.retrieve(query)
         if not docs:
             raise HTTPException(
@@ -159,7 +162,10 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
         sources, _ = _build_sources(docs)
 
     elapsed = time.perf_counter() - start_time
-    logger.info("Query processed in %.2f seconds. Intent=%s. Retrieved %d docs.", elapsed, intent.get("intent"), len(sources))
+    logger.info(
+        "Query processed in %.2f seconds. Intent=%s. Retrieved %d docs.",
+        elapsed, intent.workflow.value, len(sources),
+    )
 
     _append_history(session_id, "assistant", answer)
     return ChatResponse(
@@ -167,26 +173,9 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
         query=query,
         answer=answer,
         sources=sources,
-        intent=intent.get("intent", "simple"),
-        intent_reason=intent.get("reason", ""),
+        intent=intent.workflow.value,
+        intent_reason=intent.reason,
     )
-
-
-@router.get(
-    "/sessions",
-    response_model=list[SessionInfo],
-    summary="List active chat sessions.",
-)
-async def list_sessions():
-    return [
-        SessionInfo(
-            session_id=session_id,
-            created_at=data["created_at"],
-            last_active=data["last_active"],
-            turn_count=data["turn_count"],
-        )
-        for session_id, data in SESSION_STORE.items()
-    ]
 
 
 @router.get(
