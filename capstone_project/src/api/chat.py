@@ -1,8 +1,6 @@
 ﻿import logging
 import os
 import time
-import uuid
-from datetime import datetime
 from typing import Any
 
 from dotenv import load_dotenv
@@ -11,7 +9,8 @@ from openai import OpenAI
 from src.agents.agentic_rag import AgenticRAG
 from src.agents.intent_detection import IntentDetector, Workflow
 from src.agents.knowledge_rag import KnowledgeRAG
-from src.retrival.doc_registry import list_documents
+from src.orchestator.session_store import session_store              # adjust import path to match your project
+from src.orchestator.vector_store_manager import get_vector_store     # adjust import path to match your project
 from src.schema.validation import (
     ChatHistoryItem,
     ChatRequest,
@@ -21,9 +20,6 @@ from src.schema.validation import (
     SessionHistoryResponse,
     SessionInfo,
 )
-
-from docs.embedding import OpenAIEmbedder
-from docs.vector_store import FAISSVectorStore
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -35,54 +31,11 @@ if not api_key:
     raise ValueError("OPENAI_API_KEY is required for the chat API.")
 
 client = OpenAI(api_key=api_key)
-
-# Initialize retrieval components
-embedder = OpenAIEmbedder()
-vector_store = FAISSVectorStore(
-    index_dir="faiss_index",
-    embedding_model=embedder.embedding_model,
-)
 intent_detector = IntentDetector()
-knowledge_rag = KnowledgeRAG(client=client, vector_store=vector_store, top_k=5)
-agentic_rag = AgenticRAG(client=client, vector_store=vector_store, top_k=5)
 
-SESSION_STORE: dict[str, dict[str, Any]] = {}
-MAX_HISTORY_ITEMS = 20
-
-
-def _make_session(session_id: str | None = None, reset: bool = False) -> str:
-    if reset or not session_id or session_id not in SESSION_STORE:
-        session_id = str(uuid.uuid4())
-        SESSION_STORE[session_id] = {
-            "created_at": datetime.utcnow().isoformat() + "Z",
-            "last_active": datetime.utcnow().isoformat() + "Z",
-            "history": [],
-            "turn_count": 0,
-        }
-    return session_id
-
-
-def _append_history(session_id: str, role: str, text: str) -> None:
-    session = SESSION_STORE[session_id]
-    session["history"].append(
-        {
-            "role": role,
-            "text": text,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-        }
-    )
-    session["history"] = session["history"][-MAX_HISTORY_ITEMS:]
-    session["last_active"] = datetime.utcnow().isoformat() + "Z"
-    session["turn_count"] = len(session["history"]) // 2
-
-
-def _history_context(session_id: str) -> str | None:
-    history = SESSION_STORE.get(session_id, {}).get("history", [])
-    if not history:
-        return None
-    return "\n".join(
-        f"{item['role'].capitalize()}: {item['text']}" for item in history
-    )
+# NOTE: knowledge_rag / agentic_rag are now constructed per-request with the
+# session's own vector store (see chat_documents below) instead of one
+# shared global instance — this is what scopes retrieval to this chat's docs.
 
 
 def _extract_response_text(response: Any) -> str:
@@ -117,7 +70,7 @@ def _build_sources(docs: list) -> tuple[list[str], list[dict]]:
     "/",
     response_model=ChatResponse,
     status_code=status.HTTP_200_OK,
-    summary="Submit a chat query and route to the appropriate RAG path.",
+    summary="Submit a chat query and route to the appropriate RAG path, scoped to this session's documents.",
 )
 async def chat_documents(request: ChatRequest) -> ChatResponse:
     query = request.query.strip()
@@ -127,15 +80,28 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
             detail="Query text cannot be empty.",
         )
 
-    session_id = _make_session(request.session_id, request.reset_session)
-    history_context = _history_context(session_id)
-    _append_history(session_id, "user", query)
+    if not request.session_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="session_id is required. Upload a document via /upload/ first to obtain one.",
+        )
 
-    if vector_store.vector_store is None:
+    session_id = session_store.make_session(request.session_id, request.reset_session)
+
+    if not session_store.has_documents(session_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No indexed documents are available for search.",
+            detail="No documents have been uploaded to this chat session yet. Upload a document first.",
         )
+
+    history_context = session_store.history_context(session_id)
+    session_store.append_history(session_id, "user", query)
+
+    # Per-session vector store + per-session RAG agents — this is what
+    # keeps this chat's retrieval scoped to only the docs uploaded here.
+    vector_store = get_vector_store(session_id)
+    knowledge_rag = KnowledgeRAG(client=client, vector_store=vector_store, top_k=5)
+    agentic_rag = AgenticRAG(client=client, vector_store=vector_store, top_k=5)
 
     start_time = time.perf_counter()
     intent = intent_detector.detect(query)
@@ -167,7 +133,7 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
         elapsed, intent.workflow.value, len(sources),
     )
 
-    _append_history(session_id, "assistant", answer)
+    session_store.append_history(session_id, "assistant", answer)
     return ChatResponse(
         session_id=session_id,
         query=query,
@@ -179,28 +145,56 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
 
 
 @router.get(
+    "/sessions",
+    response_model=list[SessionInfo],
+    summary="List active chat sessions.",
+)
+async def list_sessions():
+    return [SessionInfo(**row) for row in session_store.list_sessions()]
+
+
+@router.get(
     "/history/{session_id}",
     response_model=SessionHistoryResponse,
     summary="Retrieve chat history for a session.",
 )
 async def get_session_history(session_id: str):
-    session = SESSION_STORE.get(session_id)
-    if not session:
+    if not session_store.session_exists(session_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
     return SessionHistoryResponse(
         session_id=session_id,
-        history=[ChatHistoryItem(**item) for item in session["history"]],
+        history=[ChatHistoryItem(**item) for item in session_store.get_history(session_id)],
     )
 
 
-@router.get(
-    "/documents",
-    response_model=DocumentListResponse,
-    summary="List documents and indexing status.",
+@router.delete(
+    "/sessions/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a chat session, its history, and its document records.",
 )
-async def get_document_list():
-    docs = list_documents()
+async def delete_session(session_id: str):
+    if not session_store.session_exists(session_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+    session_store.delete_session(session_id)  # CASCADE removes history + documents rows too
+
+
+@router.get(
+    "/documents/{session_id}",
+    response_model=DocumentListResponse,
+    summary="List documents uploaded within this chat session.",
+)
+async def get_document_list(session_id: str):
+    if not session_store.session_exists(session_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+    docs = session_store.list_documents(session_id)
     return DocumentListResponse(
         count=len(docs),
-        documents=[DocumentStatus(**doc) for doc in docs],
+        documents=[
+            DocumentStatus(
+                file_id=d["file_id"],
+                filename=d["original_name"],
+                status=d["status"],
+            )
+            for d in docs
+        ],
     )

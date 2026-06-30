@@ -6,11 +6,10 @@ from typing import List
 from fastapi import APIRouter, UploadFile, HTTPException, status, Request
 from src.schema.validation import UploadedFile, UploadResponse
 from src.retrival.blob_storage import upload_blob, list_blobs, delete_blob, blob_exists
+from src.orchestator.session_store import session_store          # adjust import path to match your project
+from src.orchestator.vector_store_manager import get_vector_store  # adjust import path to match your project
 from docs.parser import PDFParser
 from docs.chunking import DocumentChunker
-from docs.embedding import OpenAIEmbedder
-from docs.vector_store import FAISSVectorStore
-
 
 logger = logging.getLogger(__name__)
 
@@ -30,19 +29,12 @@ MAX_FILES             = 10
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 # ------------------------------------------------------------------
-# Initialize ingestion components
+# Initialize ingestion components (vector_store is now per-session,
+# see vector_store_manager.get_vector_store(session_id) below)
 # ------------------------------------------------------------------
 
 parser = PDFParser()
-
 chunker = DocumentChunker()
-
-embedder = OpenAIEmbedder()
-
-vector_store = FAISSVectorStore(
-    index_dir="faiss_index",
-    embedding_model=embedder.embedding_model,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +83,14 @@ async def read_upload(file: UploadFile) -> tuple[bytes, int]:
                                 "type": "array",
                                 "items": {"type": "string", "format": "binary"},
                                 "description": "One or more PDF files",
-                            }
+                            },
+                            "session_id": {
+                                "type": "string",
+                                "description": (
+                                    "Existing chat session to attach these documents to. "
+                                    "Omit to start a brand-new session."
+                                ),
+                            },
                         },
                     }
                 }
@@ -101,13 +100,19 @@ async def read_upload(file: UploadFile) -> tuple[bytes, int]:
     },
 )
 async def upload_documents(request: Request) -> UploadResponse:
-    form   = await request.form()
-    files  = form.getlist("files")
+    form  = await request.form()
+    files = form.getlist("files")
+    requested_session_id = form.get("session_id")  # may be None on first upload of a new chat
 
     if not files:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files were provided.")
     if len(files) > MAX_FILES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Maximum {MAX_FILES} files per request.")
+
+    # Reuse the given session if it exists, otherwise mint a new one.
+    # This is the same session_id the client will later pass to /chat/.
+    session_id = session_store.make_session(requested_session_id, reset=False)
+    vector_store = get_vector_store(session_id)
 
     uploaded: List[UploadedFile] = []
     errors:   List[dict]         = []
@@ -144,20 +149,35 @@ async def upload_documents(request: Request) -> UploadResponse:
                 doc_id=file_id,
                 filename=file.filename,
             )
+            logger.info("Generated %d chunks.", len(chunks))
 
-            logger.info(
-                "Generated %d chunks.",
-                len(chunks)
-            )
+            if not chunks:
+                # No text could be extracted from any page, even after the
+                # OCR fallback in parser.py. Surface this as a real error
+                # instead of silently "succeeding" with nothing indexed.
+                raise ValueError(
+                    f"'{file.filename}' produced 0 chunks — no extractable text was "
+                    "found on any page, even after OCR. The file may be scanned at "
+                    "very low quality, password-protected/encrypted, or corrupted. "
+                    "Check server logs for the OCR fallback details."
+                )
 
             # ---------------------------------------------------------
-            # Step 3 : Store in FAISS
+            # Step 3 : Store in this session's own FAISS index
             # ---------------------------------------------------------
 
             vector_store.add_documents(chunks)
 
-            logger.info(
-                "Stored document in FAISS."
+            # ---------------------------------------------------------
+            # Step 4 : Record the document against this session in SQLite,
+            # so /chat/, /documents, and history all agree on what's in
+            # this chat.
+            # ---------------------------------------------------------
+            session_store.add_document(
+                session_id=session_id,
+                file_id=file_id,
+                original_name=file.filename,
+                size_bytes=size,
             )
             
             # # Upload to Azure Blob Storage
@@ -194,6 +214,7 @@ async def upload_documents(request: Request) -> UploadResponse:
     logger.info(f"Upload complete — {len(uploaded)} succeeded, {len(errors)} failed.")
 
     return UploadResponse(
+        session_id     = session_id,
         message        = f"{len(uploaded)} file(s) uploaded successfully.",
         uploaded_count = len(uploaded),
         failed_count   = len(errors),
@@ -202,61 +223,22 @@ async def upload_documents(request: Request) -> UploadResponse:
     )
 
 
-@router.get("/list", summary="List uploaded PDFs in temporary upload folder")
-async def list_temp_uploads():
-    """Return PDF files currently stored in the temporary upload folder.
-
-    The upload flow saves files as: <original_stem>_<uuid>.pdf
-    We reconstruct `original_name` and `file_id` from that pattern when possible.
-    """
-    temp_files = list(TEMP_DIR.glob("*.pdf"))
-    uploaded = []
-
-    for p in sorted(temp_files, key=lambda x: x.stat().st_mtime, reverse=True):
-        try:
-            stem = p.stem  # expected: originalname_uuid
-            parts = stem.rsplit("_", 1)
-            if len(parts) == 2:
-                original_stem, file_id = parts
-                original_name = f"{original_stem}.pdf"
-            else:
-                file_id = ""
-                original_name = p.name
-
-            uploaded.append(UploadedFile(
-                file_id=file_id,
-                original_name=original_name,
-                blob_url=str(p.resolve()),
-                size_bytes=p.stat().st_size,
-            ))
-        except Exception:
-            continue
-
-    return {"count": len(uploaded), "files": uploaded}
-
-# ---------------------------------------------------------------------------
-# Azure blob listing (kept for now). Comment out or remove if you want to
-# exclusively use the local temp upload listing above.
-# ---------------------------------------------------------------------------
-# @router.get("/list/azure", summary="List all PDFs in Azure Blob Storage (if configured)")
-# async def list_blobs_in_container():
-#     """Return blob names in the configured Azure container.
-
-#     This endpoint uses `src.retrival.blob_storage.list_blobs()` and will raise
-#     an HTTP 500 error if Azure configuration or network calls fail.
-#     """
-#     try:
-#         blobs = list_blobs()
-#     except Exception as exc:
-#         logger.exception("Azure blob listing failed")
-#         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Azure blob listing failed: {exc}")
-
-#     return {"count": len(blobs), "files": blobs}
+@router.get("/list/{session_id}", summary="List documents uploaded within a chat session")
+async def list_session_uploads(session_id: str):
+    """Return the documents that belong to this specific chat session (from SQLite),
+    not a directory scan — this is what keeps /chat/ and /upload/ in agreement."""
+    session_id = session_id.strip().rstrip(".")
+    if not session_store.session_exists(session_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+    docs = session_store.list_documents(session_id)
+    return {"session_id": session_id, "count": len(docs), "files": docs}
 
 
-@router.delete("/{blob_name}", summary="Delete a PDF from Azure Blob Storage")
-async def delete_blob_file(blob_name: str):
-    if not blob_exists(blob_name):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Blob '{blob_name}' not found.")
-    delete_blob(blob_name)
-    return {"message": f"'{blob_name}' deleted from blob storage."}
+@router.delete("/{session_id}/{file_id}", summary="Remove a document from a chat session")
+async def delete_session_document(session_id: str, file_id: str):
+    if not session_store.delete_document(session_id, file_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found in this session.")
+    # NOTE: this removes the SQLite record. If your FAISSVectorStore supports
+    # deleting by doc_id, call it here too (e.g. vector_store.delete(file_id))
+    # so the embeddings don't linger in the index after the record is gone.
+    return {"message": f"Document '{file_id}' removed from session '{session_id}'."}
