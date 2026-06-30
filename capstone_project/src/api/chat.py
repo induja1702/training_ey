@@ -1,11 +1,26 @@
-import logging
+﻿import logging
 import os
+import time
+import uuid
+from datetime import datetime
+from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, status
 from openai import OpenAI
-from src.agents.intent_detection import detect_intent, IntentAgent
-from pydantic import BaseModel
+from src.agents.agentic_rag import AgenticRAG
+from src.agents.intent_detection import detect_intent
+from src.agents.knowledge_rag import KnowledgeRAG
+from src.retrival.doc_registry import list_documents
+from src.schema.validation import (
+    ChatHistoryItem,
+    ChatRequest,
+    ChatResponse,
+    DocumentListResponse,
+    DocumentStatus,
+    SessionHistoryResponse,
+    SessionInfo,
+)
 
 from docs.embedding import OpenAIEmbedder
 from docs.vector_store import FAISSVectorStore
@@ -27,111 +42,62 @@ vector_store = FAISSVectorStore(
     index_dir="faiss_index",
     embedding_model=embedder.embedding_model,
 )
-top_k: int = 5
+
+knowledge_rag = KnowledgeRAG(client=client, vector_store=vector_store, top_k=5)
+agentic_rag = AgenticRAG(client=client, vector_store=vector_store, top_k=5)
+
+SESSION_STORE: dict[str, dict[str, Any]] = {}
+MAX_HISTORY_ITEMS = 20
 
 
+def _make_session(session_id: str | None = None, reset: bool = False) -> str:
+    if reset or not session_id or session_id not in SESSION_STORE:
+        session_id = str(uuid.uuid4())
+        SESSION_STORE[session_id] = {
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "last_active": datetime.utcnow().isoformat() + "Z",
+            "history": [],
+            "turn_count": 0,
+        }
+    return session_id
 
 
-def build_prompt(question: str, sources: list[dict]) -> str:
-    source_text = "\n\n".join(
-        f"Source: {item['source']}\n{item['content']}"
-        for item in sources
+def _append_history(session_id: str, role: str, text: str) -> None:
+    session = SESSION_STORE[session_id]
+    session["history"].append(
+        {
+            "role": role,
+            "text": text,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+    )
+    session["history"] = session["history"][-MAX_HISTORY_ITEMS:]
+    session["last_active"] = datetime.utcnow().isoformat() + "Z"
+    session["turn_count"] = len(session["history"]) // 2
+
+
+def _history_context(session_id: str) -> str | None:
+    history = SESSION_STORE.get(session_id, {}).get("history", [])
+    if not history:
+        return None
+    return "\n".join(
+        f"{item['role'].capitalize()}: {item['text']}" for item in history
     )
 
-    return (
-        "You are a helpful assistant. Use the following extracted document passages to answer the user's question. "
-        "If the answer is not contained in the passages, say that you cannot answer based on the provided documents.\n\n"
-        f"{source_text}\n\n"
-        f"Question: {question}\n"
-        "Answer:"
-    )
 
-
-def create_chat_answer(question: str, document_texts: list[dict]) -> str:
-    prompt = build_prompt(question, document_texts)
-
-    response = client.responses.create(
-        model="gpt-4o",
-        input=[
-            {"role": "system", "content": "You are a helpful document assistant."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.2,
-        max_output_tokens=400,
-    )
-
-    output_text = ""
+def _extract_response_text(response: Any) -> str:
     if getattr(response, "output_text", None):
-        output_text = response.output_text
-    elif getattr(response, "output", None):
+        return response.output_text
+    if getattr(response, "output", None):
         for item in response.output:
             if getattr(item, "type", None) == "message":
                 for content_item in getattr(item, "content", []) or []:
                     if getattr(content_item, "type", None) == "output_text":
-                        output_text = getattr(content_item, "text", "")
-                        break
-                if output_text:
-                    break
-
-    return output_text.strip()
+                        return getattr(content_item, "text", "")
+    return ""
 
 
-@router.post(
-    "/",
-    response_model=ChatResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Query the uploaded documents",
-)
-async def chat_documents(request: ChatRequest) -> ChatResponse:
-    query = request.query.strip()
-    if not query:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Query text cannot be empty.",
-        )
-
-    if vector_store.vector_store is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No indexed documents are available for search.",
-        )
-
-    # detect intent first
-    intent = detect_intent(query)
-    logger.info("Intent detected: %s (%.2f) - %s", intent.get("intent"), intent.get("confidence"), intent.get("reason"))
-
-    if intent.get("intent") == "simple":
-        docs = vector_store.similarity_search(query=query, k=top_k)
-        if not docs:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No relevant document chunks found for the query.",
-            )
-
-        sources = []
-        source_payload = []
-        for doc in docs:
-            metadata = doc.metadata or {}
-            source_name = metadata.get("filename") or metadata.get("source") or "document"
-            page_number = metadata.get("page")
-            if page_number is not None:
-                source_name = f"{source_name} (page {page_number})"
-
-            text = doc.page_content.strip()
-            sources.append(source_name)
-            source_payload.append({"source": source_name, "content": text})
-
-        answer = create_chat_answer(query, source_payload)
-        return ChatResponse(query=query, answer=answer, sources=sources)
-
-    # complex intent -> use IntentAgent to synthesize
-    docs = vector_store.similarity_search(query=query, k=top_k * 4)
-    if not docs:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No relevant document chunks found for the query.",
-        )
-
+def _build_sources(docs: list) -> tuple[list[str], list[dict]]:
     sources = []
     source_payload = []
     for doc in docs:
@@ -144,8 +110,108 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
         text = doc.page_content.strip()
         sources.append(source_name)
         source_payload.append({"source": source_name, "content": text})
+    return sources, source_payload
 
-    agent = IntentAgent()
-    result = agent.run(query, source_payload)
-    answer = result.get("answer", "")
-    return ChatResponse(query=query, answer=answer, sources=sources)
+
+@router.post(
+    "/",
+    response_model=ChatResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Submit a chat query and route to the appropriate RAG path.",
+)
+async def chat_documents(request: ChatRequest) -> ChatResponse:
+    query = request.query.strip()
+    if not query:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Query text cannot be empty.",
+        )
+
+    session_id = _make_session(request.session_id, request.reset_session)
+    history_context = _history_context(session_id)
+    _append_history(session_id, "user", query)
+
+    if vector_store.vector_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No indexed documents are available for search.",
+        )
+
+    start_time = time.perf_counter()
+    intent = detect_intent(query)
+    logger.info("Intent detected: %s (%.2f) - %s", intent.get("intent"), intent.get("confidence"), intent.get("reason"))
+
+    if intent.get("intent") == "simple":
+        docs = knowledge_rag.retrieve(query)
+        if not docs:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No relevant document chunks found for the query.",
+            )
+        sources, source_payload = _build_sources(docs)
+        answer = knowledge_rag.answer(query, source_payload, history_context)
+    else:
+        agent_result = agentic_rag.run(query, history_context)
+        answer = agent_result.get("answer", "")
+        docs = []
+        for item in agent_result.get("retrieved", []):
+            docs.extend(item.get("docs", []))
+        sources, _ = _build_sources(docs)
+
+    elapsed = time.perf_counter() - start_time
+    logger.info("Query processed in %.2f seconds. Intent=%s. Retrieved %d docs.", elapsed, intent.get("intent"), len(sources))
+
+    _append_history(session_id, "assistant", answer)
+    return ChatResponse(
+        session_id=session_id,
+        query=query,
+        answer=answer,
+        sources=sources,
+        intent=intent.get("intent", "simple"),
+        intent_reason=intent.get("reason", ""),
+    )
+
+
+@router.get(
+    "/sessions",
+    response_model=list[SessionInfo],
+    summary="List active chat sessions.",
+)
+async def list_sessions():
+    return [
+        SessionInfo(
+            session_id=session_id,
+            created_at=data["created_at"],
+            last_active=data["last_active"],
+            turn_count=data["turn_count"],
+        )
+        for session_id, data in SESSION_STORE.items()
+    ]
+
+
+@router.get(
+    "/history/{session_id}",
+    response_model=SessionHistoryResponse,
+    summary="Retrieve chat history for a session.",
+)
+async def get_session_history(session_id: str):
+    session = SESSION_STORE.get(session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+    return SessionHistoryResponse(
+        session_id=session_id,
+        history=[ChatHistoryItem(**item) for item in session["history"]],
+    )
+
+
+@router.get(
+    "/documents",
+    response_model=DocumentListResponse,
+    summary="List documents and indexing status.",
+)
+async def get_document_list():
+    docs = list_documents()
+    return DocumentListResponse(
+        count=len(docs),
+        documents=[DocumentStatus(**doc) for doc in docs],
+    )

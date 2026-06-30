@@ -160,19 +160,19 @@ async def upload_documents(request: Request) -> UploadResponse:
                 "Stored document in FAISS."
             )
             
-            # Upload to Azure Blob Storage
-            blob_name = f"{stem}_{file_id}.pdf"
-            blob_url  = upload_blob(blob_name, data)
-            logger.info(f"Uploaded to blob: {blob_url}")
+            # # Upload to Azure Blob Storage
+            # blob_name = f"{stem}_{file_id}.pdf"
+            # blob_url  = upload_blob(blob_name, data)
+            # logger.info(f"Uploaded to blob: {blob_url}")
 
-            # Delete local temp file
-            temp_path.unlink()
-            logger.info(f"Deleted local file: {temp_path}")
+            # # Delete local temp file
+            # temp_path.unlink()
+            # logger.info(f"Deleted local file: {temp_path}")
 
             uploaded.append(UploadedFile(
                 file_id       = file_id,
                 original_name = file.filename,
-                blob_url      = blob_url,
+                # blob_url      = blob_url,
                 size_bytes    = size,
             ))
 
@@ -183,13 +183,13 @@ async def upload_documents(request: Request) -> UploadResponse:
             logger.error(f"Unexpected error for '{file.filename}': {ex}", exc_info=True)
             errors.append({"filename": file.filename, "reason": "An unexpected error occurred."})
 
-        finally:
-            if temp_path and temp_path.exists():
-                temp_path.unlink(missing_ok=True)
-            try:
-                await file.close()
-            except Exception:
-                pass
+        # finally:
+        #     if temp_path and temp_path.exists():
+        #         temp_path.unlink(missing_ok=True)
+        #     try:
+        #         await file.close()
+        #     except Exception:
+        #         pass
 
     logger.info(f"Upload complete — {len(uploaded)} succeeded, {len(errors)} failed.")
 
@@ -202,10 +202,56 @@ async def upload_documents(request: Request) -> UploadResponse:
     )
 
 
-@router.get("/list", summary="List all PDFs in Azure Blob Storage")
-async def list_blobs_in_container():
-    blobs = list_blobs()
-    return {"count": len(blobs), "files": blobs}
+@router.get("/list", summary="List uploaded PDFs in temporary upload folder")
+async def list_temp_uploads():
+    """Return PDF files currently stored in the temporary upload folder.
+
+    The upload flow saves files as: <original_stem>_<uuid>.pdf
+    We reconstruct `original_name` and `file_id` from that pattern when possible.
+    """
+    temp_files = list(TEMP_DIR.glob("*.pdf"))
+    uploaded = []
+
+    for p in sorted(temp_files, key=lambda x: x.stat().st_mtime, reverse=True):
+        try:
+            stem = p.stem  # expected: originalname_uuid
+            parts = stem.rsplit("_", 1)
+            if len(parts) == 2:
+                original_stem, file_id = parts
+                original_name = f"{original_stem}.pdf"
+            else:
+                file_id = ""
+                original_name = p.name
+
+            uploaded.append(UploadedFile(
+                file_id=file_id,
+                original_name=original_name,
+                blob_url=str(p.resolve()),
+                size_bytes=p.stat().st_size,
+            ))
+        except Exception:
+            continue
+
+    return {"count": len(uploaded), "files": uploaded}
+
+# ---------------------------------------------------------------------------
+# Azure blob listing (kept for now). Comment out or remove if you want to
+# exclusively use the local temp upload listing above.
+# ---------------------------------------------------------------------------
+# @router.get("/list/azure", summary="List all PDFs in Azure Blob Storage (if configured)")
+# async def list_blobs_in_container():
+#     """Return blob names in the configured Azure container.
+
+#     This endpoint uses `src.retrival.blob_storage.list_blobs()` and will raise
+#     an HTTP 500 error if Azure configuration or network calls fail.
+#     """
+#     try:
+#         blobs = list_blobs()
+#     except Exception as exc:
+#         logger.exception("Azure blob listing failed")
+#         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Azure blob listing failed: {exc}")
+
+#     return {"count": len(blobs), "files": blobs}
 
 
 @router.delete("/{blob_name}", summary="Delete a PDF from Azure Blob Storage")
