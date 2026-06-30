@@ -1,7 +1,11 @@
+import json
 import logging
+from enum import Enum
+
 from openai import OpenAI
+from pydantic import BaseModel, ValidationError
+
 from docs.vector_store import FAISSVectorStore
-from src.agents.knowledge_rag import KnowledgeRAG
 
 logger = logging.getLogger(__name__)
 
@@ -18,19 +22,51 @@ def _extract_response_text(response) -> str:
     return ""
 
 
+# -----------------------------
+# Task Router schema
+# -----------------------------
+
+class TaskType(str, Enum):
+    COMPARISON = "comparison"
+    COMPLIANCE = "compliance"
+    GENERAL = "general"
+
+
+class TaskRouteResult(BaseModel):
+    task: TaskType
+    reason: str
+
+
+# -----------------------------
+# Validation schema
+# -----------------------------
+
+class ValidationResult(BaseModel):
+    is_grounded: bool
+    issues: list[str] = []
+    corrected_answer: str
+
+
 class AgenticRAG:
+    """
+    Question -> Query Analysis -> Decompose -> Retrieve -> Task Router
+        -> {Comparison | Compliance | General} -> Validation -> Response
+    """
 
     def __init__(self, client: OpenAI, vector_store: FAISSVectorStore, top_k: int = 5, model: str = "gpt-4o"):
         self.client = client
         self.vector_store = vector_store
         self.top_k = top_k
         self.model = model
-        self.knowledge_rag = KnowledgeRAG(client=client, vector_store=vector_store, model=model, top_k=top_k)
 
+    # -------------------------------------------------------------
+    # 1. Query Analysis + Decompose
+    # -------------------------------------------------------------
     def analyze_query(self, question: str) -> list[str]:
         prompt = (
-            "You are a query analysis agent. Decompose the following user question into up to three retrieval-guided subquestions. "
-            "Return each subquestion on a new line without numbering or extra commentary.\n\n"
+            "You are a query analysis agent. Decompose the following user question into up to three "
+            "retrieval-guided subquestions. Return each subquestion on a new line without numbering or "
+            "extra commentary.\n\n"
             f"Question: {question}\n"
             "Subquestions:"
         )
@@ -47,13 +83,18 @@ class AgenticRAG:
         lines = [line.strip("- ").strip() for line in output_text.splitlines() if line.strip()]
         return lines or [question]
 
-    def run(self, question: str, history: str | None = None) -> dict:
-        subquestions = self.analyze_query(question)
+    # -------------------------------------------------------------
+    # 2. Retrieve
+    # -------------------------------------------------------------
+    def retrieve(self, subquestions: list[str]) -> list[dict]:
         retrieved = []
         for sub in subquestions:
             docs = self.vector_store.similarity_search(query=sub, k=self.top_k)
             retrieved.append({"subquestion": sub, "docs": docs})
+        return retrieved
 
+    @staticmethod
+    def _build_sources(retrieved: list[dict]) -> list[dict]:
         sources = []
         for item in retrieved:
             for doc in item["docs"]:
@@ -67,15 +108,97 @@ class AgenticRAG:
                     "source": source_name,
                     "content": doc.page_content.strip(),
                 })
+        return sources
 
-        context = "\n\n".join(
+    @staticmethod
+    def _build_context(sources: list[dict]) -> str:
+        if not sources:
+            return "No relevant documents were retrieved."
+        return "\n\n".join(
             f"Subquestion: {item['subquestion']}\nSource: {item['source']}\n{item['content']}"
             for item in sources
         )
-        history_section = f"Previous conversation:\n{history}\n\n" if history else ""
-        synth_prompt = (
-            "You are an expert contract reasoning assistant. Use the provided passages to answer the user's original question. "
-            "Explicitly reference the source names and verify the answer against the evidence.\n\n"
+
+    # -------------------------------------------------------------
+    # 3. Task Router
+    # -------------------------------------------------------------
+    def route_task(self, question: str) -> TaskRouteResult:
+        system_prompt = """
+You are the Task Router for a contract intelligence agentic RAG system.
+Decide which specialist agent should handle the question. Choose exactly one:
+
+- comparison: the question asks to compare/contrast two or more contracts, clauses, or terms.
+- compliance: the question concerns regulatory, policy, legal, or contractual compliance/risk.
+- general: anything else requiring multi-step reasoning over retrieved context that isn't a
+  comparison or compliance question.
+
+Return ONLY valid JSON in this exact shape:
+{"task": "comparison", "reason": "short justification"}
+"""
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question},
+            ],
+            temperature=0.0,
+            max_output_tokens=150,
+        )
+        text = _extract_response_text(response).strip()
+        try:
+            return TaskRouteResult.model_validate(json.loads(text))
+        except (ValidationError, json.JSONDecodeError) as e:
+            logger.exception("Task routing failed, defaulting to general: %s", e)
+            return TaskRouteResult(task=TaskType.GENERAL, reason="Fallback due to parsing failure")
+
+    # -------------------------------------------------------------
+    # 4. Specialist agents — Comparison / Compliance / General
+    # -------------------------------------------------------------
+    def _run_comparison_agent(self, question: str, context: str, history_section: str) -> str:
+        prompt = (
+            "You are the Comparison Agent for a contract intelligence system. Using only the provided "
+            "passages, compare the relevant contracts/clauses/terms in the question. Clearly list "
+            "similarities, differences, and a recommendation if one is asked for. Reference source names "
+            "for every claim, and explicitly flag any point where the evidence is insufficient.\n\n"
+            f"{history_section}"
+            f"{context}\n\nQuestion: {question}\nAnswer:"
+        )
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {"role": "system", "content": "You are an expert contract comparison assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_output_tokens=600,
+        )
+        return _extract_response_text(response).strip()
+
+    def _run_compliance_agent(self, question: str, context: str, history_section: str) -> str:
+        prompt = (
+            "You are the Compliance Agent for a contract intelligence system. Using only the provided "
+            "passages, assess the compliance/regulatory/risk question carefully. Cite the specific clause "
+            "or source for every claim. If the evidence does not clearly support a compliance conclusion, "
+            "say so explicitly rather than speculating, since this output may inform real decisions.\n\n"
+            f"{history_section}"
+            f"{context}\n\nQuestion: {question}\nAnswer:"
+        )
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {"role": "system", "content": "You are an expert contract compliance and risk assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_output_tokens=600,
+        )
+        return _extract_response_text(response).strip()
+
+    def _run_general_agent(self, question: str, context: str, history_section: str) -> str:
+        prompt = (
+            "You are an expert contract reasoning assistant. Use the provided passages to answer the "
+            "user's original question. Explicitly reference the source names and verify the answer "
+            "against the evidence.\n\n"
             f"{history_section}"
             f"{context}\n\nQuestion: {question}\nAnswer:"
         )
@@ -83,10 +206,106 @@ class AgenticRAG:
             model=self.model,
             input=[
                 {"role": "system", "content": "You are an expert assistant that synthesizes multiple documents and validates citations."},
-                {"role": "user", "content": synth_prompt},
+                {"role": "user", "content": prompt},
             ],
             temperature=0.2,
             max_output_tokens=600,
         )
-        answer = _extract_response_text(response).strip()
-        return {"answer": answer, "retrieved": retrieved}
+        return _extract_response_text(response).strip()
+
+    def run_specialist_agent(self, task: TaskType, question: str, context: str, history_section: str) -> str:
+        if task == TaskType.COMPARISON:
+            return self._run_comparison_agent(question, context, history_section)
+        if task == TaskType.COMPLIANCE:
+            return self._run_compliance_agent(question, context, history_section)
+        return self._run_general_agent(question, context, history_section)
+
+    # -------------------------------------------------------------
+    # 5. Validation
+    # -------------------------------------------------------------
+    def validate(self, draft_answer: str, context: str) -> ValidationResult:
+        system_prompt = """
+You are the Validation Agent. Check the draft answer strictly against the provided context.
+Flag any claim not supported by the context as an issue. Produce a corrected answer that removes
+or qualifies unsupported claims, without introducing any new information not present in the context.
+
+Return ONLY valid JSON in this exact shape:
+{"is_grounded": true, "issues": [], "corrected_answer": "..."}
+"""
+        user_prompt = f"Context:\n{context}\n\nDraft answer:\n{draft_answer}\n\nValidate this draft."
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.0,
+            max_output_tokens=700,
+        )
+        text = _extract_response_text(response).strip()
+        try:
+            return ValidationResult.model_validate(json.loads(text))
+        except (ValidationError, json.JSONDecodeError) as e:
+            logger.exception("Validation failed, passing draft through unmodified: %s", e)
+            return ValidationResult(is_grounded=True, issues=[], corrected_answer=draft_answer)
+
+    # -------------------------------------------------------------
+    # 6. Response (final polish)
+    # -------------------------------------------------------------
+    def generate_response(self, question: str, validated_answer: str) -> str:
+        prompt = (
+            "Take the validated answer below and present it clearly and concisely to the user, in a tone "
+            "appropriate to the original question. Do not add information beyond what's given.\n\n"
+            f"Original question: {question}\n\nValidated answer:\n{validated_answer}\n\nFinal response:"
+        )
+        response = self.client.responses.create(
+            model=self.model,
+            input=[
+                {"role": "system", "content": "You are the final Response Generator in a RAG pipeline."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_output_tokens=600,
+        )
+        return _extract_response_text(response).strip()
+
+    # -------------------------------------------------------------
+    # Orchestration — Question -> Query Analysis -> Decompose -> Retrieve
+    #   -> Task Router -> {Comparison|Compliance|General} -> Validation -> Response
+    # -------------------------------------------------------------
+    def run(self, question: str, history: str | None = None) -> dict:
+        history_section = f"Previous conversation:\n{history}\n\n" if history else ""
+
+        # Query Analysis + Decompose
+        subquestions = self.analyze_query(question)
+
+        # Retrieve
+        retrieved = self.retrieve(subquestions)
+        sources = self._build_sources(retrieved)
+        context = self._build_context(sources)
+
+        # Task Router
+        route = self.route_task(question)
+        logger.info("Task routed: %s - %s", route.task.value, route.reason)
+
+        # Specialist agent (Comparison / Compliance / General)
+        draft_answer = self.run_specialist_agent(route.task, question, context, history_section)
+
+        # Validation
+        validation = self.validate(draft_answer, context)
+        logger.info("Validation: grounded=%s issues=%s", validation.is_grounded, validation.issues)
+
+        # Response
+        final_answer = self.generate_response(question, validation.corrected_answer)
+
+        return {
+            "answer": final_answer,
+            "task": route.task.value,
+            "task_reason": route.reason,
+            "draft_answer": draft_answer,
+            "is_grounded": validation.is_grounded,
+            "validation_issues": validation.issues,
+            "subquestions": subquestions,
+            "retrieved": retrieved,
+            "sources": sources,
+        }
