@@ -7,6 +7,7 @@ from docs.vector_store import FAISSVectorStore
 logger = logging.getLogger(__name__)
 
 
+
 def _extract_response_text(response) -> str:
     if getattr(response, "output_text", None):
         return response.output_text
