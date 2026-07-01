@@ -23,26 +23,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Verify Docker Secrets
-        run: |
-          if [ -z "${{ secrets.DOCKER_USERNAME }}" ]; then
-            echo "❌ DOCKER_USERNAME secret is missing"
-            exit 1
-          fi
-
-          if [ -z "${{ secrets.DOCKER_PASSWORD }}" ]; then
-            echo "❌ DOCKER_PASSWORD secret is missing"
-            exit 1
-          fi
-
-          echo "✅ Docker secrets found"
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -53,8 +38,8 @@ jobs:
       - name: Build and Push Backend Image
         uses: docker/build-push-action@v6
         with:
-          context: ./backend
-          file: ./backend/Dockerfile
+          context: ./capstone_project/backend
+          file: ./capstone_project/backend/Dockerfile
           push: true
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/${{ env.BACKEND_IMAGE }}:latest
@@ -62,7 +47,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Deploy Backend to Azure Web App
+      - name: Deploy Backend
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.BACKEND_APP_NAME }}
@@ -72,30 +57,14 @@ jobs:
   frontend:
     name: Build & Deploy Frontend
     runs-on: ubuntu-latest
-
     needs: backend
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Verify Docker Secrets
-        run: |
-          if [ -z "${{ secrets.DOCKER_USERNAME }}" ]; then
-            echo "❌ DOCKER_USERNAME secret is missing"
-            exit 1
-          fi
-
-          if [ -z "${{ secrets.DOCKER_PASSWORD }}" ]; then
-            echo "❌ DOCKER_PASSWORD secret is missing"
-            exit 1
-          fi
-
-          echo "✅ Docker secrets found"
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -106,8 +75,8 @@ jobs:
       - name: Build and Push Frontend Image
         uses: docker/build-push-action@v6
         with:
-          context: ./frontend
-          file: ./frontend/Dockerfile
+          context: ./capstone_project/frontend
+          file: ./capstone_project/frontend/Dockerfile
           push: true
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/${{ env.FRONTEND_IMAGE }}:latest
@@ -115,7 +84,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Deploy Frontend to Azure Web App
+      - name: Deploy Frontend
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.FRONTEND_APP_NAME }}
