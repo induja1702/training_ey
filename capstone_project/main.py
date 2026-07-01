@@ -1,11 +1,31 @@
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from src.api.upload_api import router as upload_router
-from src.api.chat import router as chat_router
-import uvicorn
 import logging
+import os
+import sys
+from pathlib import Path
 
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+import uvicorn
+
+ROOT_DIR = Path(__file__).resolve().parent
+BACKEND_PATH = ROOT_DIR / "backend"
+if BACKEND_PATH.exists() and str(BACKEND_PATH) not in sys.path:
+    sys.path.insert(0, str(BACKEND_PATH))
+
+from backend.src.api.upload_api import router as upload_router
+from backend.src.api.chat import router as chat_router
+from backend.src.observability.langsmith import tracing_context, _get_client, _get_project_name, is_enabled
+
+
+class LangSmithRequestTracingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        with tracing_context(
+            client=_get_client(),
+            enabled=is_enabled(),
+            project_name=_get_project_name(),
+        ):
+            return await call_next(request)
 
 
 logging.basicConfig(
@@ -20,6 +40,10 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+)
+
+app.add_middleware(
+    LangSmithRequestTracingMiddleware,
 )
 
 app.add_middleware(
