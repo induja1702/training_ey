@@ -1,15 +1,17 @@
+import asyncio
+import json
 import uuid
 import logging
 from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, UploadFile, HTTPException, status, Request
+from fastapi.responses import StreamingResponse
+
 from src.schema.validation import UploadedFile, UploadResponse
-from src.retrival.blob_storage import upload_blob, list_blobs, delete_blob, blob_exists
-from src.orchestator.session_store import session_store          # adjust import path to match your project
-from src.orchestator.vector_store_manager import get_vector_store  # adjust import path to match your project
-from docs.parser import PDFParser
-from docs.chunking import DocumentChunker
+from src.retrieval.blob_storage import upload_blob, list_blobs, delete_blob, blob_exists
+from src.retrieval.doc_registry import register_document
+from docs.pipeline import get_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +30,7 @@ MAX_FILES             = 10
 
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# ------------------------------------------------------------------
-# Initialize ingestion components (vector_store is now per-session,
-# see vector_store_manager.get_vector_store(session_id) below)
-# ------------------------------------------------------------------
-
-parser = PDFParser()
-chunker = DocumentChunker()
-
+# Shared pipeline singleton lives in docs/pipeline.py
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,13 +39,10 @@ chunker = DocumentChunker()
 def validate_file(file: UploadFile) -> str | None:
     if not file.filename:
         return "Filename is missing."
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in ALLOWED_EXTENSIONS:
-        return f"'{file.filename}' is not a PDF. Only .pdf files are accepted."
+    if Path(file.filename).suffix.lower() not in ALLOWED_EXTENSIONS:
+        return f"'{file.filename}' is not a PDF."
     if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
-        return (
-            f"'{file.filename}' has unsupported content type: {file.content_type}."
-        )
+        return f"'{file.filename}' has unsupported content type: {file.content_type}."
     return None
 
 
@@ -70,7 +62,6 @@ async def read_upload(file: UploadFile) -> tuple[bytes, int]:
 @router.post(
     "/",
     response_model=UploadResponse,
-    status_code=status.HTTP_200_OK,
     openapi_extra={
         "requestBody": {
             "content": {
@@ -83,14 +74,7 @@ async def read_upload(file: UploadFile) -> tuple[bytes, int]:
                                 "type": "array",
                                 "items": {"type": "string", "format": "binary"},
                                 "description": "One or more PDF files",
-                            },
-                            "session_id": {
-                                "type": "string",
-                                "description": (
-                                    "Existing chat session to attach these documents to. "
-                                    "Omit to start a brand-new session."
-                                ),
-                            },
+                            }
                         },
                     }
                 }
@@ -102,119 +86,89 @@ async def read_upload(file: UploadFile) -> tuple[bytes, int]:
 async def upload_documents(request: Request) -> UploadResponse:
     form  = await request.form()
     files = form.getlist("files")
-    requested_session_id = form.get("session_id")  # may be None on first upload of a new chat
 
     if not files:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files were provided.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files provided.")
     if len(files) > MAX_FILES:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Maximum {MAX_FILES} files per request.")
-
-    # Reuse the given session if it exists, otherwise mint a new one.
-    # This is the same session_id the client will later pass to /chat/.
-    session_id = session_store.make_session(requested_session_id, reset=False)
-    vector_store = get_vector_store(session_id)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Max {MAX_FILES} files per request.")
 
     uploaded: List[UploadedFile] = []
     errors:   List[dict]         = []
 
+    parser, chunker, vector_store = get_pipeline()
+
     for file in files:
         temp_path: Path | None = None
         try:
+            # ── 1. Validate ───────────────────────────────────────────
             err = validate_file(file)
             if err:
                 errors.append({"filename": file.filename, "reason": err})
                 continue
 
+            # ── 2. Read into memory & save to local temp ──────────────
             data, size = await read_upload(file)
-
-            # Save locally
             file_id   = str(uuid.uuid4())
             stem      = Path(file.filename).stem
             temp_path = TEMP_DIR / f"{stem}_{file_id}.pdf"
             temp_path.write_bytes(data)
-            logger.info(f"Saved locally: {temp_path} ({size:,} bytes)")
-            TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            logger.info("Saved locally: %s (%d bytes)", temp_path, size)
 
-            # # ---------------------------------------------------------
-            # # Step 1 : Parse PDF
-            # # ---------------------------------------------------------
+            # ── 3. Parse PDF → pages ──────────────────────────────────
             pages = parser.parse(pdf_path=temp_path)
-            logger.info(f"Parsed {len(pages)} pages.")
-            #
-            # ---------------------------------------------------------
-            # Step 2 : Chunk PDF
-            # ---------------------------------------------------------
-            chunks = chunker.chunk(
-                pages=pages,
-                doc_id=file_id,
-                filename=file.filename,
-            )
-            logger.info("Generated %d chunks.", len(chunks))
+            page_count = len(pages)
+            logger.info("Parsed %d page(s) from '%s'.", page_count, file.filename)
 
-            if not chunks:
-                # No text could be extracted from any page, even after the
-                # OCR fallback in parser.py. Surface this as a real error
-                # instead of silently "succeeding" with nothing indexed.
-                raise ValueError(
-                    f"'{file.filename}' produced 0 chunks — no extractable text was "
-                    "found on any page, even after OCR. The file may be scanned at "
-                    "very low quality, password-protected/encrypted, or corrupted. "
-                    "Check server logs for the OCR fallback details."
-                )
+            # ── 4. Chunk pages ────────────────────────────────────────
+            chunks = chunker.chunk(pages=pages, doc_id=file_id, filename=file.filename)
+            chunk_count = len(chunks)
+            logger.info("Generated %d chunk(s) from '%s'.", chunk_count, file.filename)
 
-            # ---------------------------------------------------------
-            # Step 3 : Store in this session's own FAISS index
-            # ---------------------------------------------------------
-
+            # ── 5. Embed & store in FAISS ─────────────────────────────
             vector_store.add_documents(chunks)
+            logger.info("Stored %d chunks in FAISS for doc_id '%s'.", len(chunks), file_id)
 
-            # ---------------------------------------------------------
-            # Step 4 : Record the document against this session in SQLite,
-            # so /chat/, /documents, and history all agree on what's in
-            # this chat.
-            # ---------------------------------------------------------
-            session_store.add_document(
-                session_id=session_id,
-                file_id=file_id,
-                original_name=file.filename,
-                size_bytes=size,
-            )
-            
-            # # Upload to Azure Blob Storage
+            # ── 6. Upload to Azure Blob Storage ───────────────────────
             # blob_name = f"{stem}_{file_id}.pdf"
             # blob_url  = upload_blob(blob_name, data)
-            # logger.info(f"Uploaded to blob: {blob_url}")
+            # logger.info("Uploaded to blob: %s", blob_url)
+            blob_url = ""
 
-            # # Delete local temp file
+            # ── 7. Delete local temp file ─────────────────────────────
             # temp_path.unlink()
-            # logger.info(f"Deleted local file: {temp_path}")
+            # logger.info("Deleted local temp file: %s", temp_path)
+            # temp_path = None
 
             uploaded.append(UploadedFile(
                 file_id       = file_id,
                 original_name = file.filename,
-                # blob_url      = blob_url,
+                blob_url      = blob_url,
                 size_bytes    = size,
+                page_count    = page_count,
+                chunk_count   = chunk_count,
             ))
+            register_document(
+                file_id=file_id,
+                original_name=file.filename,
+                page_count=page_count,
+                chunk_count=chunk_count,
+            )
 
         except ValueError as ve:
+            logger.warning(str(ve))
             errors.append({"filename": file.filename, "reason": str(ve)})
 
         except Exception as ex:
-            logger.error(f"Unexpected error for '{file.filename}': {ex}", exc_info=True)
+            logger.error("Unexpected error for '%s': %s", file.filename, ex, exc_info=True)
             errors.append({"filename": file.filename, "reason": "An unexpected error occurred."})
 
         # finally:
         #     if temp_path and temp_path.exists():
         #         temp_path.unlink(missing_ok=True)
-        #     try:
-        #         await file.close()
-        #     except Exception:
-        #         pass
 
-    logger.info(f"Upload complete — {len(uploaded)} succeeded, {len(errors)} failed.")
+    logger.info("Upload complete — %d succeeded, %d failed.", len(uploaded), len(errors))
 
     return UploadResponse(
-        session_id     = session_id,
         message        = f"{len(uploaded)} file(s) uploaded successfully.",
         uploaded_count = len(uploaded),
         failed_count   = len(errors),
@@ -223,22 +177,119 @@ async def upload_documents(request: Request) -> UploadResponse:
     )
 
 
-@router.get("/list/{session_id}", summary="List documents uploaded within a chat session")
-async def list_session_uploads(session_id: str):
-    """Return the documents that belong to this specific chat session (from SQLite),
-    not a directory scan — this is what keeps /chat/ and /upload/ in agreement."""
-    session_id = session_id.strip().rstrip(".")
-    if not session_store.session_exists(session_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
-    docs = session_store.list_documents(session_id)
-    return {"session_id": session_id, "count": len(docs), "files": docs}
+@router.post("/stream", summary="Upload one PDF and stream pipeline progress via SSE")
+async def upload_stream(request: Request):
+    """
+    Streams Server-Sent Events (text/event-stream) so the UI can animate
+    each pipeline step as it completes.  Handles exactly one file per request.
+    """
+    form  = await request.form()
+    files = form.getlist("files")
+
+    if not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No file provided.")
+
+    file = files[0]
+
+    async def generate():
+        temp_path: Path | None = None
+        try:
+            # ── validate ──────────────────────────────────────────────
+            err = validate_file(file)
+            if err:
+                yield f"data: {json.dumps({'error': err})}\n\n"
+                return
+
+            # ── read & save ───────────────────────────────────────────
+            data, size = await read_upload(file)
+            file_id    = str(uuid.uuid4())
+            stem       = Path(file.filename).stem
+            temp_path  = TEMP_DIR / f"{stem}_{file_id}.pdf"
+            temp_path.write_bytes(data)
+
+            parser, chunker, vector_store = get_pipeline()
+
+            # ── step 0 – parse ────────────────────────────────────────
+            yield f"data: {json.dumps({'step': 0, 'status': 'running'})}\n\n"
+            await asyncio.sleep(0)
+            pages      = parser.parse(pdf_path=temp_path)
+            page_count = len(pages)
+            logger.info("Parsed %d page(s) from '%s'.", page_count, file.filename)
+            yield f"data: {json.dumps({'step': 0, 'status': 'done', 'pages': page_count})}\n\n"
+            await asyncio.sleep(0)
+
+            # ── step 1 – clean (runs inside chunker) ──────────────────
+            yield f"data: {json.dumps({'step': 1, 'status': 'running'})}\n\n"
+            await asyncio.sleep(0)
+            chunks      = chunker.chunk(pages=pages, doc_id=file_id, filename=file.filename)
+            chunk_count = len(chunks)
+            logger.info("Generated %d chunk(s) from '%s'.", chunk_count, file.filename)
+            yield f"data: {json.dumps({'step': 1, 'status': 'done'})}\n\n"
+            await asyncio.sleep(0)
+
+            # ── step 2 – chunk (done in same call) ───────────────────
+            yield f"data: {json.dumps({'step': 2, 'status': 'done', 'chunks': chunk_count})}\n\n"
+            await asyncio.sleep(0)
+
+            # ── step 3 – embed (calls OpenAI — slow) ─────────────────
+            yield f"data: {json.dumps({'step': 3, 'status': 'running'})}\n\n"
+            await asyncio.sleep(0)
+            vector_store.add_documents(chunks)
+            logger.info("Stored %d chunks in FAISS for doc_id '%s'.", chunk_count, file_id)
+            yield f"data: {json.dumps({'step': 3, 'status': 'done'})}\n\n"
+            await asyncio.sleep(0)
+
+            # ── steps 4 & 5 – index (done inside add_documents) ──────
+            yield f"data: {json.dumps({'step': 4, 'status': 'done'})}\n\n"
+            await asyncio.sleep(0)
+            yield f"data: {json.dumps({'step': 5, 'status': 'done'})}\n\n"
+            await asyncio.sleep(0)
+
+            result = {
+                "file_id":       file_id,
+                "original_name": file.filename,
+                "blob_url":      "",
+                "size_bytes":    size,
+                "page_count":    page_count,
+                "chunk_count":   chunk_count,
+            }
+            register_document(
+                file_id=file_id,
+                original_name=file.filename,
+                page_count=page_count,
+                chunk_count=chunk_count,
+            )
+            logger.info("Stream upload complete: %s (%d chunks)", file.filename, chunk_count)
+            yield f"data: {json.dumps({'done': True, 'file': result})}\n\n"
+
+        except ValueError as ve:
+            logger.warning(str(ve))
+            yield f"data: {json.dumps({'error': str(ve)})}\n\n"
+
+        except Exception as ex:
+            logger.error("Stream upload error: %s", ex, exc_info=True)
+            yield f"data: {json.dumps({'error': 'An unexpected error occurred.'})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":     "no-cache",
+            "Connection":        "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
-@router.delete("/{session_id}/{file_id}", summary="Remove a document from a chat session")
-async def delete_session_document(session_id: str, file_id: str):
-    if not session_store.delete_document(session_id, file_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found in this session.")
-    # NOTE: this removes the SQLite record. If your FAISSVectorStore supports
-    # deleting by doc_id, call it here too (e.g. vector_store.delete(file_id))
-    # so the embeddings don't linger in the index after the record is gone.
-    return {"message": f"Document '{file_id}' removed from session '{session_id}'."}
+@router.get("/list", summary="List all PDFs in Azure Blob Storage")
+async def list_blobs_in_container():
+    blobs = list_blobs()
+    return {"count": len(blobs), "files": blobs}
+
+
+@router.delete("/{blob_name}", summary="Delete a PDF from Azure Blob Storage")
+async def delete_blob_file(blob_name: str):
+    if not blob_exists(blob_name):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Blob '{blob_name}' not found.")
+    delete_blob(blob_name)
+    return {"message": f"'{blob_name}' deleted from blob storage."}

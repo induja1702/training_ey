@@ -10,6 +10,7 @@ class UploadedFile(BaseModel):
 
 
 class UploadResponse(BaseModel):
+    session_id: str
     message: str
     uploaded_count: int
     failed_count: int

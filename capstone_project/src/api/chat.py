@@ -1,16 +1,19 @@
 ﻿import logging
 import os
 import time
+import uuid
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, status
 from openai import OpenAI
+
 from src.agents.agentic_rag import AgenticRAG
 from src.agents.intent_detection import IntentDetector, Workflow
 from src.agents.knowledge_rag import KnowledgeRAG
-from src.orchestator.session_store import session_store              # adjust import path to match your project
-from src.orchestator.vector_store_manager import get_vector_store     # adjust import path to match your project
+from src.retrieval.doc_registry import list_documents
 from src.schema.validation import (
     ChatHistoryItem,
     ChatRequest,
@@ -18,59 +21,121 @@ from src.schema.validation import (
     DocumentListResponse,
     DocumentStatus,
     SessionHistoryResponse,
-    SessionInfo,
 )
+from docs.pipeline import get_vector_store
+
+load_dotenv(dotenv_path=Path(__file__).parents[2] / ".env", override=True)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Load environment variables and OpenAI key
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise ValueError("OPENAI_API_KEY is required for the chat API.")
+SESSION_STORE: dict[str, dict[str, Any]] = {}
+MAX_HISTORY_ITEMS = 20
 
-client = OpenAI(api_key=api_key)
-intent_detector = IntentDetector()
+# ---------------------------------------------------------------------------
+# Lazy-initialised singletons (created on first request, not at import time)
+# ---------------------------------------------------------------------------
 
-# NOTE: knowledge_rag / agentic_rag are now constructed per-request with the
-# session's own vector store (see chat_documents below) instead of one
-# shared global instance — this is what scopes retrieval to this chat's docs.
+_openai_client: OpenAI | None = None
+_intent_detector: IntentDetector | None = None
+_knowledge_rag: KnowledgeRAG | None = None
+_agentic_rag: AgenticRAG | None = None
 
 
-def _extract_response_text(response: Any) -> str:
-    if getattr(response, "output_text", None):
-        return response.output_text
-    if getattr(response, "output", None):
-        for item in response.output:
-            if getattr(item, "type", None) == "message":
-                for content_item in getattr(item, "content", []) or []:
-                    if getattr(content_item, "type", None) == "output_text":
-                        return getattr(content_item, "text", "")
-    return ""
+def _get_client() -> OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY not set.")
+        _openai_client = OpenAI(api_key=api_key)
+    return _openai_client
 
+
+def _get_agents() -> tuple[IntentDetector, KnowledgeRAG, AgenticRAG]:
+    global _intent_detector, _knowledge_rag, _agentic_rag
+    client = _get_client()
+    vector_store = get_vector_store()
+    if _intent_detector is None:
+        _intent_detector = IntentDetector()
+    if _knowledge_rag is None:
+        _knowledge_rag = KnowledgeRAG(client=client, vector_store=vector_store, top_k=5)
+    if _agentic_rag is None:
+        _agentic_rag = AgenticRAG(client=client, vector_store=vector_store, top_k=5)
+    return _intent_detector, _knowledge_rag, _agentic_rag
+
+
+# ---------------------------------------------------------------------------
+# Session helpers
+# ---------------------------------------------------------------------------
+
+def _make_session(session_id: str | None = None, reset: bool = False) -> str:
+    if reset or not session_id or session_id not in SESSION_STORE:
+        session_id = str(uuid.uuid4())
+        SESSION_STORE[session_id] = {
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "last_active": datetime.utcnow().isoformat() + "Z",
+            "history": [],
+            "turn_count": 0,
+        }
+    return session_id
+
+
+def _append_history(session_id: str, role: str, text: str) -> None:
+    session = SESSION_STORE[session_id]
+    session["history"].append({
+        "role": role,
+        "text": text,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    })
+    session["history"] = session["history"][-MAX_HISTORY_ITEMS:]
+    session["last_active"] = datetime.utcnow().isoformat() + "Z"
+    session["turn_count"] = len(session["history"]) // 2
+
+
+def _history_context(session_id: str) -> str | None:
+    history = SESSION_STORE.get(session_id, {}).get("history", [])
+    if not history:
+        return None
+    return "\n".join(
+        f"{item['role'].capitalize()}: {item['text']}" for item in history
+    )
+
+
+# ---------------------------------------------------------------------------
+# Source extraction
+# ---------------------------------------------------------------------------
 
 def _build_sources(docs: list) -> tuple[list[str], list[dict]]:
-    sources = []
-    source_payload = []
-    for doc in docs:
-        metadata = doc.metadata or {}
-        source_name = metadata.get("filename") or metadata.get("source") or "document"
-        page_number = metadata.get("page")
-        if page_number is not None:
-            source_name = f"{source_name} (page {page_number})"
+    sources: list[str] = []
+    source_payload: list[dict] = []
+    for item in docs:
+        if isinstance(item, dict):
+            content = item.get("content") or ""
+            source_name = item.get("source") or "document"
+            sources.append(source_name)
+            source_payload.append({"source": source_name, "content": content})
+            continue
 
-        text = doc.page_content.strip()
-        sources.append(source_name)
-        source_payload.append({"source": source_name, "content": text})
+        meta = getattr(item, "metadata", None) or {}
+        name = meta.get("filename") or meta.get("source") or "document"
+        page = meta.get("page")
+        if page is not None:
+            name = f"{name} (page {page})"
+        sources.append(name)
+        source_payload.append({"source": name, "content": getattr(item, "page_content", "").strip()})
     return sources, source_payload
 
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @router.post(
     "/",
     response_model=ChatResponse,
     status_code=status.HTTP_200_OK,
-    summary="Submit a chat query and route to the appropriate RAG path, scoped to this session's documents.",
+    summary="Submit a chat query — auto-routed to KnowledgeRAG or AgenticRAG.",
 )
 async def chat_documents(request: ChatRequest) -> ChatResponse:
     query = request.query.strip()
@@ -80,38 +145,33 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
             detail="Query text cannot be empty.",
         )
 
-    if not request.session_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="session_id is required. Upload a document via /upload/ first to obtain one.",
-        )
+    session_id = _make_session(request.session_id, request.reset_session)
+    history_context = _history_context(session_id)
+    _append_history(session_id, "user", query)
 
-    session_id = session_store.make_session(request.session_id, request.reset_session)
-
-    if not session_store.has_documents(session_id):
+    vector_store = get_vector_store()
+    if vector_store.vector_store is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No documents have been uploaded to this chat session yet. Upload a document first.",
+            detail="No indexed documents are available. Upload a PDF first via POST /upload/.",
         )
 
-    history_context = session_store.history_context(session_id)
-    session_store.append_history(session_id, "user", query)
+    intent_detector, knowledge_rag, agentic_rag = _get_agents()
 
-    # Per-session vector store + per-session RAG agents — this is what
-    # keeps this chat's retrieval scoped to only the docs uploaded here.
-    vector_store = get_vector_store(session_id)
-    knowledge_rag = KnowledgeRAG(client=client, vector_store=vector_store, top_k=5)
-    agentic_rag = AgenticRAG(client=client, vector_store=vector_store, top_k=5)
-
-    start_time = time.perf_counter()
+    start = time.perf_counter()
     intent = intent_detector.detect(query)
     logger.info(
-        "Intent detected: %s (%.2f) - %s",
-        intent.workflow.value, intent.confidence, intent.reason
+        "Intent detected: %s (%.2f) — %s",
+        intent.workflow.value, intent.confidence, intent.reason,
     )
 
     if intent.workflow == Workflow.KNOWLEDGE_RAG:
-        docs = knowledge_rag.retrieve(query)
+        retrieval_result = knowledge_rag.retrieve(query)
+        if isinstance(retrieval_result, tuple):
+            docs, _ = retrieval_result
+        else:
+            docs = retrieval_result
+
         if not docs:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -127,13 +187,13 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
             docs.extend(item.get("docs", []))
         sources, _ = _build_sources(docs)
 
-    elapsed = time.perf_counter() - start_time
+    elapsed = time.perf_counter() - start
     logger.info(
-        "Query processed in %.2f seconds. Intent=%s. Retrieved %d docs.",
+        "Query answered in %.2fs. intent=%s sources=%d",
         elapsed, intent.workflow.value, len(sources),
     )
 
-    session_store.append_history(session_id, "assistant", answer)
+    _append_history(session_id, "assistant", answer)
     return ChatResponse(
         session_id=session_id,
         query=query,
@@ -145,56 +205,28 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
 
 
 @router.get(
-    "/sessions",
-    response_model=list[SessionInfo],
-    summary="List active chat sessions.",
-)
-async def list_sessions():
-    return [SessionInfo(**row) for row in session_store.list_sessions()]
-
-
-@router.get(
     "/history/{session_id}",
     response_model=SessionHistoryResponse,
     summary="Retrieve chat history for a session.",
 )
-async def get_session_history(session_id: str):
-    if not session_store.session_exists(session_id):
+async def get_session_history(session_id: str) -> SessionHistoryResponse:
+    session = SESSION_STORE.get(session_id)
+    if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
     return SessionHistoryResponse(
         session_id=session_id,
-        history=[ChatHistoryItem(**item) for item in session_store.get_history(session_id)],
+        history=[ChatHistoryItem(**item) for item in session["history"]],
     )
 
 
-@router.delete(
-    "/sessions/{session_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete a chat session, its history, and its document records.",
-)
-async def delete_session(session_id: str):
-    if not session_store.session_exists(session_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
-    session_store.delete_session(session_id)  # CASCADE removes history + documents rows too
-
-
 @router.get(
-    "/documents/{session_id}",
+    "/documents",
     response_model=DocumentListResponse,
-    summary="List documents uploaded within this chat session.",
+    summary="List all indexed documents.",
 )
-async def get_document_list(session_id: str):
-    if not session_store.session_exists(session_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
-    docs = session_store.list_documents(session_id)
+async def get_document_list() -> DocumentListResponse:
+    docs = list_documents()
     return DocumentListResponse(
         count=len(docs),
-        documents=[
-            DocumentStatus(
-                file_id=d["file_id"],
-                filename=d["original_name"],
-                status=d["status"],
-            )
-            for d in docs
-        ],
+        documents=[DocumentStatus(**doc) for doc in docs],
     )
