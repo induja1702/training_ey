@@ -13,7 +13,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-API           = "http://localhost:8000"
+# API           = "http://localhost:8000"
+API    = "https://backendappservice.azurewebsites.net/"
 EMBEDDING_DIM = 1536
 
 PIPELINE_STEPS = [
