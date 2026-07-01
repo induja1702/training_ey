@@ -66,7 +66,7 @@ def _build_dsn() -> str:
         db       = os.environ["POSTGRES_DB"],
         user     = os.environ["POSTGRES_USER"],
         password = os.environ["POSTGRES_PASSWORD"],
-        # ssl      = os.environ.get("POSTGRES_SSLMODE", "require"),
+        ssl      = os.environ.get("POSTGRES_SSLMODE", "require"),
     )
 
 
