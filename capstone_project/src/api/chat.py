@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, status
 from openai import OpenAI
 
 from src.agents.agentic_rag import AgenticRAG
+from src.observability.langsmith import traceable_operation
 from src.agents.intent_detection import IntentDetector, Workflow
 from src.agents.knowledge_rag import KnowledgeRAG
 from src.orchestator.session_store_postgres import SessionStore
@@ -91,6 +92,11 @@ def _build_sources(docs: list) -> tuple[list[str], list[dict]]:
 # Routes
 # ---------------------------------------------------------------------------
 
+@traceable_operation(
+    name="Chat request",
+    tags=["api", "chat"],
+    metadata={"endpoint": "/chat/"},
+)
 @router.post(
     "/",
     response_model=ChatResponse,

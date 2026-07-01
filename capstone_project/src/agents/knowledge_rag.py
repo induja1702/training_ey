@@ -16,6 +16,7 @@ from typing import Optional
 from langchain_core.documents import Document
 from openai import OpenAI
 
+from src.observability.langsmith import traceable_operation
 # from docs.vector_store import FAISSVectorStore
 from docs.vector_store_pinecone import PineconeVectorStoreManager
 
@@ -175,6 +176,11 @@ class KnowledgeRAG:
     # ------------------------------------------------------------------
     # Retrieve
     # ------------------------------------------------------------------
+    @traceable_operation(
+        name="KnowledgeRAG retrieval",
+        tags=["knowledge_rag", "retrieval"],
+        metadata={"component": "knowledge_rag"},
+    )
     def retrieve(self, query: str) -> tuple[list[Document], str]:
         """
         Retrieve relevant documents for a query.
@@ -216,6 +222,11 @@ class KnowledgeRAG:
     # ------------------------------------------------------------------
     # Answer
     # ------------------------------------------------------------------
+    @traceable_operation(
+        name="KnowledgeRAG answer",
+        tags=["knowledge_rag", "llm"],
+        metadata={"component": "knowledge_rag"},
+    )
     def answer(
         self,
         query: str,

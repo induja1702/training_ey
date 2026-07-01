@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
+from src.observability.langsmith import traceable_operation
+
 logger = logging.getLogger(__name__)
 
 load_dotenv()
@@ -71,6 +73,11 @@ class IntentDetector:
         self.model = model
         self.temperature = temperature
 
+    @traceable_operation(
+        name="Intent detection",
+        tags=["intent", "workflow"],
+        metadata={"component": "intent_detector"},
+    )
     def detect(self, query: str) -> IntentResult:
         system_prompt = """
 You are an Intent Detection Agent for a Contract Intelligence System.

@@ -6,6 +6,7 @@ from enum import Enum
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
+from src.observability.langsmith import traceable_operation
 # from docs.vector_store import FAISSVectorStore
 from docs.vector_store_pinecone import PineconeVectorStoreManager
 
@@ -66,6 +67,11 @@ class AgenticRAG:
     # ------------------------------------------------------------------
     # 1. Query Analysis + Decompose
     # ------------------------------------------------------------------
+    @traceable_operation(
+        name="AgenticRAG query analysis",
+        tags=["agentic_rag", "llm"],
+        metadata={"component": "agentic_rag"},
+    )
     def analyze_query(self, question: str) -> list[str]:
         prompt = (
             "You are a query analysis agent. Decompose the following user question into up to three "
@@ -146,6 +152,11 @@ class AgenticRAG:
     # ------------------------------------------------------------------
     # 3. Task Router
     # ------------------------------------------------------------------
+    @traceable_operation(
+        name="AgenticRAG task routing",
+        tags=["agentic_rag", "routing"],
+        metadata={"component": "agentic_rag"},
+    )
     def route_task(self, question: str) -> TaskRouteResult:
         system_prompt = """
 You are the Task Router for a contract intelligence agentic RAG system.
@@ -246,6 +257,11 @@ Return ONLY valid JSON in this exact shape:
         )
         return _extract_response_text(response).strip()
 
+    @traceable_operation(
+        name="AgenticRAG specialist agent",
+        tags=["agentic_rag", "llm"],
+        metadata={"component": "agentic_rag"},
+    )
     def run_specialist_agent(self, task: TaskType, question: str, context: str, history_section: str) -> str:
         if task == TaskType.COMPARISON:
             return self._run_comparison_agent(question, context, history_section)

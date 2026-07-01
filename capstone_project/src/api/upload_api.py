@@ -12,6 +12,7 @@ from src.schema.validation import UploadedFile, UploadResponse
 from src.retrieval.blob_storage import upload_blob, list_blobs, delete_blob, blob_exists
 from src.retrieval.doc_registry import register_document
 from src.orchestator.session_store_postgres import session_store
+from src.observability.langsmith import traceable_operation
 from docs.pipeline import get_pipeline, get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,11 @@ def _get_session_id(request: Request) -> str:
 # Routes
 # ---------------------------------------------------------------------------
 
+@traceable_operation(
+    name="Upload documents",
+    tags=["api", "upload"],
+    metadata={"endpoint": "/upload/"},
+)
 @router.post(
     "/",
     response_model=UploadResponse,
@@ -209,6 +215,11 @@ async def upload_documents(request: Request) -> UploadResponse:
     )
 
 
+@traceable_operation(
+    name="Upload stream",
+    tags=["api", "upload", "stream"],
+    metadata={"endpoint": "/upload/stream"},
+)
 @router.post("/stream", summary="Upload one PDF and stream pipeline progress via SSE")
 async def upload_stream(request: Request):
     """
