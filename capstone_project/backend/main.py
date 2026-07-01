@@ -13,9 +13,9 @@ BACKEND_PATH = ROOT_DIR / "backend"
 if BACKEND_PATH.exists() and str(BACKEND_PATH) not in sys.path:
     sys.path.insert(0, str(BACKEND_PATH))
 
-from backend.src.api.upload_api import router as upload_router
-from backend.src.api.chat import router as chat_router
-from backend.src.observability.langsmith import tracing_context, _get_client, _get_project_name, is_enabled
+from src.api.upload_api import router as upload_router
+from src.api.chat import router as chat_router
+from src.observability.langsmith import tracing_context, _get_client, _get_project_name, is_enabled
 
 
 class LangSmithRequestTracingMiddleware(BaseHTTPMiddleware):

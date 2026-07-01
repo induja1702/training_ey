@@ -751,7 +751,7 @@ if st.session_state.screen == "upload":
 
                 except requests.exceptions.ConnectionError:
                     st.session_state.upload_results.append((
-                        "error", "Cannot reach http://localhost:8000 — run `python main.py` first.",
+                        "error", "Cannot reach API — run `python main.py` first.",
                     ))
                     break
                 except Exception as exc:
