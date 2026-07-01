@@ -1,10 +1,7 @@
 ﻿import logging
 import os
 import time
-import uuid
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, status
@@ -13,6 +10,7 @@ from openai import OpenAI
 from src.agents.agentic_rag import AgenticRAG
 from src.agents.intent_detection import IntentDetector, Workflow
 from src.agents.knowledge_rag import KnowledgeRAG
+from src.orchestator.session_store_postgres import SessionStore
 from src.retrieval.doc_registry import list_documents
 from src.schema.validation import (
     ChatHistoryItem,
@@ -29,7 +27,7 @@ load_dotenv(dotenv_path=Path(__file__).parents[2] / ".env", override=True)
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-SESSION_STORE: dict[str, dict[str, Any]] = {}
+session_man = SessionStore()
 MAX_HISTORY_ITEMS = 20
 
 # ---------------------------------------------------------------------------
@@ -63,44 +61,6 @@ def _get_agents() -> tuple[IntentDetector, KnowledgeRAG, AgenticRAG]:
     if _agentic_rag is None:
         _agentic_rag = AgenticRAG(client=client, vector_store=vector_store, top_k=5)
     return _intent_detector, _knowledge_rag, _agentic_rag
-
-
-# ---------------------------------------------------------------------------
-# Session helpers
-# ---------------------------------------------------------------------------
-
-def _make_session(session_id: str | None = None, reset: bool = False) -> str:
-    if reset or not session_id or session_id not in SESSION_STORE:
-        session_id = str(uuid.uuid4())
-        SESSION_STORE[session_id] = {
-            "created_at": datetime.utcnow().isoformat() + "Z",
-            "last_active": datetime.utcnow().isoformat() + "Z",
-            "history": [],
-            "turn_count": 0,
-        }
-    return session_id
-
-
-def _append_history(session_id: str, role: str, text: str) -> None:
-    session = SESSION_STORE[session_id]
-    session["history"].append({
-        "role": role,
-        "text": text,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-    })
-    session["history"] = session["history"][-MAX_HISTORY_ITEMS:]
-    session["last_active"] = datetime.utcnow().isoformat() + "Z"
-    session["turn_count"] = len(session["history"]) // 2
-
-
-def _history_context(session_id: str) -> str | None:
-    history = SESSION_STORE.get(session_id, {}).get("history", [])
-    if not history:
-        return None
-    return "\n".join(
-        f"{item['role'].capitalize()}: {item['text']}" for item in history
-    )
-
 
 # ---------------------------------------------------------------------------
 # Source extraction
@@ -145,12 +105,12 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
             detail="Query text cannot be empty.",
         )
 
-    session_id = _make_session(request.session_id, request.reset_session)
-    history_context = _history_context(session_id)
-    _append_history(session_id, "user", query)
+    session_id = session_man.make_session(request.session_id, request.reset_session)
+    history_context = session_man.history_context(session_id)
+    session_man.append_history(session_id, "user", query)
 
     vector_store = get_vector_store()
-    if vector_store.vector_store is None:
+    if getattr(vector_store, "vector_store", None) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No indexed documents are available. Upload a PDF first via POST /upload/.",
@@ -193,7 +153,7 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
         elapsed, intent.workflow.value, len(sources),
     )
 
-    _append_history(session_id, "assistant", answer)
+    session_man.append_history(session_id, "assistant", answer)
     return ChatResponse(
         session_id=session_id,
         query=query,
@@ -210,7 +170,7 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
     summary="Retrieve chat history for a session.",
 )
 async def get_session_history(session_id: str) -> SessionHistoryResponse:
-    session = SESSION_STORE.get(session_id)
+    session = session_man.get_session_info(session_id)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
     return SessionHistoryResponse(

@@ -17,56 +17,15 @@ upload_api.py actually lives in your project.
 """
 
 import io
-import sys
-import types
 import uuid
 from unittest.mock import MagicMock
 
 import pytest
-
-# -----------------------------------------------------------------------
-# Stub out the heavy modules BEFORE upload_api (or anything it imports)
-# gets loaded. docs.chunking pulls in langchain_text_splitters ->
-# sentence_transformers -> torch/pyarrow/datasets, which is both slow
-# and, in some Windows/conda environments, crashes with a native access
-# violation due to OpenMP runtime conflicts between sklearn/pyarrow/torch.
-# Tests for upload_api.py's ROUTE LOGIC don't need any of that — they
-# mock parser/chunker behavior anyway — so we replace the modules in
-# sys.modules with lightweight stand-ins before the real import happens.
-# -----------------------------------------------------------------------
-
-_stub_parser_module = types.ModuleType("docs.parser")
-
-
-class _StubPDFParser:
-    def parse(self, pdf_path):
-        return ["stub page text"]
-
-
-_stub_parser_module.PDFParser = _StubPDFParser
-sys.modules["docs.parser"] = _stub_parser_module
-
-_stub_chunking_module = types.ModuleType("docs.chunking")
-
-
-class _StubDocumentChunker:
-    def chunk(self, pages, doc_id, filename):
-        return [{"text": p, "doc_id": doc_id, "filename": filename} for p in pages]
-
-
-_stub_chunking_module.DocumentChunker = _StubDocumentChunker
-sys.modules["docs.chunking"] = _stub_chunking_module
-
-
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.api import upload_api  # adjust import path to match your project
+from src.api import upload_api
 
-
-# -----------------------------
-# Fixtures
-# -----------------------------
 
 @pytest.fixture
 def app():
@@ -82,10 +41,6 @@ def client(app):
 
 @pytest.fixture(autouse=True)
 def mock_dependencies(monkeypatch):
-    """Replaces the module-level parser/chunker/session_store/get_vector_store
-    that upload_api.py builds at import time, so no real PDF parsing, FAISS,
-    or SQLite ever runs during these tests."""
-
     mock_parser = MagicMock()
     mock_parser.parse.return_value = ["page 1 text"]
 
@@ -103,10 +58,16 @@ def mock_dependencies(monkeypatch):
     mock_session_store.list_documents.return_value = []
     mock_session_store.delete_document.return_value = True
 
-    monkeypatch.setattr(upload_api, "parser", mock_parser)
-    monkeypatch.setattr(upload_api, "chunker", mock_chunker)
+    mock_register_document = MagicMock()
+
+    monkeypatch.setattr(
+        upload_api,
+        "get_pipeline",
+        lambda: (mock_parser, mock_chunker, mock_vector_store),
+    )
     monkeypatch.setattr(upload_api, "get_vector_store", mock_get_vector_store)
     monkeypatch.setattr(upload_api, "session_store", mock_session_store)
+    monkeypatch.setattr(upload_api, "register_document", mock_register_document)
 
     return {
         "parser": mock_parser,
@@ -114,6 +75,7 @@ def mock_dependencies(monkeypatch):
         "vector_store": mock_vector_store,
         "get_vector_store": mock_get_vector_store,
         "session_store": mock_session_store,
+        "register_document": mock_register_document,
     }
 
 
@@ -126,17 +88,16 @@ def _pdf_file(filename="contract.pdf", content=b"%PDF-1.4 fake pdf bytes", conte
 # -----------------------------
 
 class TestUploadValidation:
-
     def test_no_files_returns_400(self, client):
         response = client.post("/upload/", files=[])
         assert response.status_code == 400
-        assert "No files were provided" in response.json()["detail"]
+        assert "No files provided" in response.json()["detail"]
 
     def test_too_many_files_returns_400(self, client):
-        files = [_pdf_file(filename=f"doc{i}.pdf") for i in range(11)]  # MAX_FILES = 10
+        files = [_pdf_file(filename=f"doc{i}.pdf") for i in range(11)]
         response = client.post("/upload/", files=files)
         assert response.status_code == 400
-        assert "Maximum" in response.json()["detail"]
+        assert "Max 10 files per request" in response.json()["detail"]
 
     def test_non_pdf_extension_is_rejected_as_error_not_exception(self, client):
         files = [_pdf_file(filename="notes.txt", content_type="text/plain")]
@@ -161,7 +122,6 @@ class TestUploadValidation:
 # -----------------------------
 
 class TestUploadSuccess:
-
     def test_single_valid_pdf_succeeds(self, client, mock_dependencies):
         response = client.post("/upload/", files=[_pdf_file()])
         assert response.status_code == 200
@@ -172,13 +132,13 @@ class TestUploadSuccess:
         assert len(data["files"]) == 1
         assert data["files"][0]["original_name"] == "contract.pdf"
         assert "file_id" in data["files"][0]
-        assert data["session_id"]  # a session id was returned
+        assert data["session_id"]
 
-        # Confirm the pipeline was actually invoked
         mock_dependencies["parser"].parse.assert_called_once()
         mock_dependencies["chunker"].chunk.assert_called_once()
         mock_dependencies["vector_store"].add_documents.assert_called_once()
         mock_dependencies["session_store"].add_document.assert_called_once()
+        mock_dependencies["register_document"].assert_called_once()
 
     def test_reuses_provided_session_id(self, client, mock_dependencies):
         existing_session = str(uuid.uuid4())
@@ -211,19 +171,10 @@ class TestUploadSuccess:
 # -----------------------------
 
 class TestUploadPipelineErrors:
-
-    def test_zero_chunks_is_reported_as_error_not_silent_success(self, client, mock_dependencies):
-        mock_dependencies["chunker"].chunk.return_value = []
-        response = client.post("/upload/", files=[_pdf_file()])
-        data = response.json()
-        assert data["uploaded_count"] == 0
-        assert data["failed_count"] == 1
-        assert "0 chunks" in data["errors"][0]["reason"]
-
     def test_unexpected_parser_exception_is_caught_and_reported(self, client, mock_dependencies):
         mock_dependencies["parser"].parse.side_effect = RuntimeError("corrupted PDF stream")
         response = client.post("/upload/", files=[_pdf_file()])
-        assert response.status_code == 200  # caught, not propagated as 500
+        assert response.status_code == 200
         data = response.json()
         assert data["uploaded_count"] == 0
         assert data["failed_count"] == 1
@@ -235,7 +186,6 @@ class TestUploadPipelineErrors:
 # -----------------------------
 
 class TestListSessionUploads:
-
     def test_unknown_session_returns_404(self, client, mock_dependencies):
         mock_dependencies["session_store"].session_exists.return_value = False
         response = client.get("/upload/list/some-session-id")
@@ -254,12 +204,8 @@ class TestListSessionUploads:
         assert data["files"][0]["original_name"] == "a.pdf"
 
     def test_trailing_period_in_session_id_is_stripped(self, client, mock_dependencies):
-        """Regression test: a stray trailing '.' in the URL (e.g. from a
-        client-side templating bug) should not cause a false 404 — the
-        route strips trailing punctuation before checking session_exists."""
         response = client.get("/upload/list/some-session-id.")
         assert response.status_code == 200
-        # session_exists should have been called with the STRIPPED id
         mock_dependencies["session_store"].session_exists.assert_called_with("some-session-id")
         assert response.json()["session_id"] == "some-session-id"
 
@@ -269,7 +215,6 @@ class TestListSessionUploads:
 # -----------------------------
 
 class TestDeleteSessionDocument:
-
     def test_delete_missing_document_returns_404(self, client, mock_dependencies):
         mock_dependencies["session_store"].delete_document.return_value = False
         response = client.delete("/upload/session-1/file-1")

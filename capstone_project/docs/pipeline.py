@@ -30,11 +30,28 @@ class _UnavailableEmbedder:
 
 
 class _UnavailableVectorStore:
+    vector_store = None
+
     def add_documents(self, documents):
         return None
 
     def delete_document(self, doc_id):
         return None
+
+    def similarity_search(self, query: str, k: int = 5, doc_id=None):
+        return []
+
+    def similarity_search_with_score(self, query: str, k: int = 5, doc_id=None):
+        return []
+
+    def document_count(self):
+        return 0
+
+    def get_all_doc_ids(self):
+        return []
+
+    def get_all_documents(self, doc_id=None):
+        return []
 
 
 _parser = None
@@ -51,7 +68,8 @@ def get_pipeline():
             from docs.parser import PDFParser
             from docs.chunking import DocumentChunker
             from docs.embedding import OpenAIEmbedder
-            from docs.vector_store import FAISSVectorStore
+            # from docs.vector_store import FAISSVectorStore
+            from docs.vector_store_pinecone import PineconeVectorStoreManager
         except Exception as exc:
             logger.warning("Pipeline dependencies unavailable; using stub components. %s", exc, exc_info=True)
             _parser = _UnavailableParser()
@@ -64,8 +82,7 @@ def get_pipeline():
         _parser = PDFParser()
         _chunker = DocumentChunker()
         _embedder = OpenAIEmbedder()
-        _vector_store = FAISSVectorStore(
-            index_dir="faiss_index",
+        _vector_store = PineconeVectorStoreManager(
             embedding_model=_embedder.embedding_model,
         )
         logger.info("Pipeline ready.")

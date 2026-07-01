@@ -6,7 +6,8 @@ from enum import Enum
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
-from docs.vector_store import FAISSVectorStore
+# from docs.vector_store import FAISSVectorStore
+from docs.vector_store_pinecone import PineconeVectorStoreManager
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ class ValidationResult(BaseModel):
 
 class AgenticRAG:
 
-    def __init__(self, client: OpenAI, vector_store: FAISSVectorStore, top_k: int = 5, model: str = "gpt-4o"):
+    def __init__(self, client: OpenAI, vector_store: PineconeVectorStoreManager, top_k: int = 5, model: str = "gpt-4o"):
         self.client = client
         self.vector_store = vector_store
         self.top_k = top_k
@@ -100,16 +101,36 @@ class AgenticRAG:
     def _build_sources(retrieved: list[dict]) -> list[dict]:
         sources = []
         for item in retrieved:
-            for doc in item["docs"]:
-                metadata = doc.metadata or {}
+            if isinstance(item, dict) and "docs" in item:
+                docs = item["docs"]
+                subquestion = item.get("subquestion", "")
+            else:
+                docs = [item]
+                subquestion = ""
+
+            for doc in docs:
+                if isinstance(doc, dict):
+                    metadata = doc.get("metadata") or {}
+                    source_name = metadata.get("filename") or metadata.get("source") or "document"
+                    page_number = metadata.get("page")
+                    if page_number is not None:
+                        source_name = f"{source_name} (page {page_number})"
+                    sources.append({
+                        "subquestion": subquestion,
+                        "source": source_name,
+                        "content": str(doc.get("content") or "").strip(),
+                    })
+                    continue
+
+                metadata = getattr(doc, "metadata", None) or {}
                 source_name = metadata.get("filename") or metadata.get("source") or "document"
                 page_number = metadata.get("page")
                 if page_number is not None:
                     source_name = f"{source_name} (page {page_number})"
                 sources.append({
-                    "subquestion": item["subquestion"],
+                    "subquestion": subquestion,
                     "source": source_name,
-                    "content": doc.page_content.strip(),
+                    "content": getattr(doc, "page_content", "").strip(),
                 })
         return sources
 

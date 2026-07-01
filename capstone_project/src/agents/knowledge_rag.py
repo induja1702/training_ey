@@ -16,7 +16,8 @@ from typing import Optional
 from langchain_core.documents import Document
 from openai import OpenAI
 
-from docs.vector_store import FAISSVectorStore
+# from docs.vector_store import FAISSVectorStore
+from docs.vector_store_pinecone import PineconeVectorStoreManager
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ class KnowledgeRAG:
     def __init__(
         self,
         client: OpenAI,
-        vector_store: FAISSVectorStore,
+        vector_store: PineconeVectorStoreManager,
         model: str = "gpt-4o",
         k_initial: int = 20,        # candidates fetched before reranking
         k_final: int | None = None,  # top-N kept after reranking (or dense top-K)
