@@ -170,6 +170,11 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
     )
 
 
+@traceable_operation(
+    name="Chat session history request",
+    tags=["api", "chat", "history"],
+    metadata={"endpoint": "/chat/history/{session_id}"},
+)
 @router.get(
     "/history/{session_id}",
     response_model=SessionHistoryResponse,
@@ -185,6 +190,11 @@ async def get_session_history(session_id: str) -> SessionHistoryResponse:
     )
 
 
+@traceable_operation(
+    name="Document list request",
+    tags=["api", "chat", "documents"],
+    metadata={"endpoint": "/chat/documents"},
+)
 @router.get(
     "/documents",
     response_model=DocumentListResponse,

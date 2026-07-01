@@ -198,6 +198,11 @@ Return ONLY valid JSON in this exact shape:
     # ------------------------------------------------------------------
     # 4. Specialist agents — Comparison / Compliance / General
     # ------------------------------------------------------------------
+    @traceable_operation(
+        name="AgenticRAG comparison agent",
+        tags=["agentic_rag", "llm", "comparison"],
+        metadata={"component": "agentic_rag"},
+    )
     def _run_comparison_agent(self, question: str, context: str, history_section: str) -> str:
         prompt = (
             "You are the Comparison Agent for a contract intelligence system. Using only the provided "
@@ -218,6 +223,11 @@ Return ONLY valid JSON in this exact shape:
         )
         return _extract_response_text(response).strip()
 
+    @traceable_operation(
+        name="AgenticRAG compliance agent",
+        tags=["agentic_rag", "llm", "compliance"],
+        metadata={"component": "agentic_rag"},
+    )
     def _run_compliance_agent(self, question: str, context: str, history_section: str) -> str:
         prompt = (
             "You are the Compliance Agent for a contract intelligence system. Using only the provided "
@@ -238,6 +248,11 @@ Return ONLY valid JSON in this exact shape:
         )
         return _extract_response_text(response).strip()
 
+    @traceable_operation(
+        name="AgenticRAG general agent",
+        tags=["agentic_rag", "llm", "general"],
+        metadata={"component": "agentic_rag"},
+    )
     def _run_general_agent(self, question: str, context: str, history_section: str) -> str:
         prompt = (
             "You are an expert contract reasoning assistant. Use the provided passages to answer the "
@@ -272,6 +287,11 @@ Return ONLY valid JSON in this exact shape:
     # ------------------------------------------------------------------
     # 5. Validation
     # ------------------------------------------------------------------
+    @traceable_operation(
+        name="AgenticRAG validation",
+        tags=["agentic_rag", "llm", "validation"],
+        metadata={"component": "agentic_rag"},
+    )
     def validate(self, draft_answer: str, context: str) -> ValidationResult:
         system_prompt = """
 You are the Validation Agent. Check the draft answer strictly against the provided context.
@@ -301,6 +321,11 @@ Return ONLY valid JSON in this exact shape:
     # ------------------------------------------------------------------
     # 6. Response (final polish)
     # ------------------------------------------------------------------
+    @traceable_operation(
+        name="AgenticRAG final response generation",
+        tags=["agentic_rag", "llm", "response_generation"],
+        metadata={"component": "agentic_rag"},
+    )
     def generate_response(self, question: str, validated_answer: str) -> str:
         prompt = (
             "Take the validated answer below and present it clearly and concisely to the user, in a tone "
