@@ -2,8 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.api.upload_api import router as upload_router
-from fastapi.responses import JSONResponse
-from typing import Optional
+from src.api.chat import router as chat_router
 import uvicorn
 import logging
 
@@ -32,6 +31,7 @@ app.add_middleware(
 )
 
 app.include_router(upload_router, prefix="/upload", tags=["Upload"])
+app.include_router(chat_router, prefix="/chat", tags=["Chat"])
 
 if __name__ == "__main__":
     uvicorn.run(
