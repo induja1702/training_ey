@@ -36,6 +36,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Generator, Optional
+from dotenv import load_dotenv
 
 import psycopg2
 import psycopg2.extras
@@ -46,6 +47,7 @@ from psycopg2.pool import ThreadedConnectionPool
 MAX_HISTORY_ITEMS = 20
 _POOL_MIN_CONN    = 1
 _POOL_MAX_CONN    = 10
+load_dotenv()
 
 
 def _build_dsn() -> str:
