@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 # API           = "http://localhost:8000"
-API    = "https://backendappservice.azurewebsites.net/"
+API    = "https://backendappservice-bfhwbyf9axa8gvfj.canadacentral-01.azurewebsites.net/"
 EMBEDDING_DIM = 1536
 
 PIPELINE_STEPS = [
