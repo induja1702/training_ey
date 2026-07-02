@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 import uvicorn
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -16,6 +17,7 @@ if BACKEND_PATH.exists() and str(BACKEND_PATH) not in sys.path:
 from src.api.upload_api import router as upload_router
 from src.api.chat import router as chat_router
 from src.observability.langsmith import tracing_context, _get_client, _get_project_name, is_enabled
+from src.observability.telemetry import setup_observability
 
 
 class LangSmithRequestTracingMiddleware(BaseHTTPMiddleware):
@@ -32,7 +34,13 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s — %(name)s — %(levelname)s — %(message)s",
 )
+
 logger = logging.getLogger(__name__)
+
+# Configures logging level + (optional) OpenTelemetry span tracing.
+# Does NOT add middleware or mount /metrics — Instrumentator and
+# LangSmithRequestTracingMiddleware below already own those.
+setup_observability(service_name="contract-intelligence-api")
 
 app = FastAPI(
     title="Contract Intelligence Chatbot",
@@ -46,6 +54,7 @@ app.add_middleware(
     LangSmithRequestTracingMiddleware,
 )
 
+Instrumentator().instrument(app).expose(app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Streamlit dev origin

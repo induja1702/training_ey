@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import uuid
 import logging
 from pathlib import Path
@@ -13,6 +14,7 @@ from src.retrieval.blob_storage import upload_blob, list_blobs, delete_blob, blo
 from src.retrieval.doc_registry import register_document
 from src.orchestator.session_store_postgres import session_store
 from src.observability.langsmith import traceable_operation
+from src.observability import metrics
 from docs.pipeline import get_pipeline, get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -129,11 +131,13 @@ async def upload_documents(request: Request) -> UploadResponse:
 
     for file in files:
         temp_path: Path | None = None
+        file_start = time.perf_counter()
         try:
             # ── 1. Validate ───────────────────────────────────────────
             err = validate_file(file)
             if err:
                 errors.append({"filename": file.filename, "reason": err})
+                metrics.UPLOAD_ERRORS.labels(file_type="pdf", error_type="validation").inc()
                 continue
 
             # ── 2. Read into memory & save to local temp ──────────────
@@ -190,14 +194,21 @@ async def upload_documents(request: Request) -> UploadResponse:
                 page_count=page_count,
                 chunk_count=chunk_count,
             )
+            metrics.record_document_upload(
+                file_type="pdf",
+                total_duration=time.perf_counter() - file_start,
+                num_chunks=chunk_count,
+            )
 
         except ValueError as ve:
             logger.warning(str(ve))
             errors.append({"filename": file.filename, "reason": str(ve)})
+            metrics.UPLOAD_ERRORS.labels(file_type="pdf", error_type="value_error").inc()
 
         except Exception as ex:
             logger.error("Unexpected error for '%s': %s", file.filename, ex, exc_info=True)
             errors.append({"filename": file.filename, "reason": "An unexpected error occurred."})
+            metrics.UPLOAD_ERRORS.labels(file_type="pdf", error_type="unhandled").inc()
 
         finally:
             if temp_path and temp_path.exists():

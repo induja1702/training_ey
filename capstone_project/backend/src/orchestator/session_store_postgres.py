@@ -55,11 +55,17 @@ def _build_dsn() -> str:
     if url:
         # Heroku / Azure-style DATABASE_URL may use 'postgres://' scheme;
         # psycopg2 requires 'postgresql://'
-        return url.replace("postgres://", "postgresql://", 1)
+        dsn = url.replace("postgres://", "postgresql://", 1)
+        # Azure Postgres requires SSL; make sure it's set even if DATABASE_URL
+        # forgot the query param, without clobbering one that's already there.
+        if "sslmode=" not in dsn:
+            separator = "&" if "?" in dsn else "?"
+            dsn = f"{dsn}{separator}sslmode={os.environ.get('POSTGRES_SSLMODE', 'require')}"
+        return dsn
 
     return (
         "host={host} port={port} dbname={db} "
-        "user={user} password={password}"
+        "user={user} password={password} sslmode={ssl}"
     ).format(
         host     = os.environ["POSTGRES_HOST"],
         port     = os.environ.get("POSTGRES_PORT", "5432"),

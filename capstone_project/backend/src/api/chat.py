@@ -9,6 +9,7 @@ from openai import OpenAI
 
 from src.agents.agentic_rag import AgenticRAG
 from src.observability.langsmith import traceable_operation
+from src.observability import metrics
 from src.agents.intent_detection import IntentDetector, Workflow
 from src.agents.knowledge_rag import KnowledgeRAG
 from src.orchestator.session_store_postgres import SessionStore
@@ -131,32 +132,44 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
         intent.workflow.value, intent.confidence, intent.reason,
     )
 
-    if intent.workflow == Workflow.KNOWLEDGE_RAG:
-        retrieval_result = knowledge_rag.retrieve(query)
-        if isinstance(retrieval_result, tuple):
-            docs, _ = retrieval_result
-        else:
-            docs = retrieval_result
+    try:
+        if intent.workflow == Workflow.KNOWLEDGE_RAG:
+            retrieval_result = knowledge_rag.retrieve(query)
+            if isinstance(retrieval_result, tuple):
+                docs, _ = retrieval_result
+            else:
+                docs = retrieval_result
 
-        if not docs:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No relevant document chunks found for the query.",
-            )
-        sources, source_payload = _build_sources(docs)
-        answer = knowledge_rag.answer(query, source_payload, history_context)
-    else:
-        agent_result = agentic_rag.run(query, history_context)
-        answer = agent_result.get("answer", "")
-        docs = []
-        for item in agent_result.get("retrieved", []):
-            docs.extend(item.get("docs", []))
-        sources, _ = _build_sources(docs)
+            if not docs:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No relevant document chunks found for the query.",
+                )
+            sources, source_payload = _build_sources(docs)
+            answer = knowledge_rag.answer(query, source_payload, history_context)
+        else:
+            agent_result = agentic_rag.run(query, history_context)
+            answer = agent_result.get("answer", "")
+            docs = []
+            for item in agent_result.get("retrieved", []):
+                docs.extend(item.get("docs", []))
+            sources, _ = _build_sources(docs)
+    except HTTPException:
+        metrics.CHAT_REQUESTS_TOTAL.labels(workflow_type=intent.workflow.value, status="error").inc()
+        raise
+    except Exception:
+        metrics.CHAT_ERRORS.labels(workflow_type=intent.workflow.value, error_type="unhandled").inc()
+        raise
 
     elapsed = time.perf_counter() - start
     logger.info(
         "Query answered in %.2fs. intent=%s sources=%d",
         elapsed, intent.workflow.value, len(sources),
+    )
+    metrics.record_chat_request(
+        workflow_type=intent.workflow.value,
+        status="success",
+        duration=elapsed,
     )
 
     session_man.append_history(session_id, "assistant", answer)
