@@ -94,6 +94,24 @@ AGENT_STEP_DURATION_SECONDS = Histogram(
     buckets=(0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0),
 )
 
+INTENT_DETECTION_TOTAL = Counter(
+    "intent_detection_total",
+    "Total intent detection calls",
+    ["workflow_type", "task_type"],
+)
+
+INTENT_DETECTION_CONFIDENCE = Histogram(
+    "intent_detection_confidence",
+    "Confidence score distribution returned by the intent detector",
+    ["workflow_type"],
+    buckets=(0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95, 1.0),
+)
+
+INTENT_DETECTION_FALLBACKS = Counter(
+    "intent_detection_fallbacks_total",
+    "Times the intent detector fell back to a default result due to a parsing/validation error",
+)
+
 
 # ============================================================================
 # 4. RETRIEVAL & VECTOR STORE METRICS
@@ -301,6 +319,31 @@ def record_llm_call(model: str, duration: float, operation: str = "complete", er
         LLM_CALL_ERRORS.labels(model=model, error_code=error).inc()
     else:
         LLM_CALL_DURATION_SECONDS.labels(model=model, operation=operation).observe(duration)
+
+
+def record_intent_detection(workflow_type: str, task_type: str, confidence: float, duration: float, fallback: bool = False):
+    """Record an intent-detection call: outcome, confidence, and latency."""
+    INTENT_DETECTION_TOTAL.labels(workflow_type=workflow_type, task_type=task_type).inc()
+    INTENT_DETECTION_CONFIDENCE.labels(workflow_type=workflow_type).observe(confidence)
+    AGENT_STEP_DURATION_SECONDS.labels(agent_type="intent_detector", step_name="detect").observe(duration)
+    if fallback:
+        INTENT_DETECTION_FALLBACKS.inc()
+
+
+def record_vector_query(store_type: str, operation: str, duration: float, num_results: Optional[int] = None):
+    """Record a vector store operation (query/upsert/fetch/delete) and, for
+    reads, how many documents came back."""
+    VECTOR_STORE_QUERY_DURATION_SECONDS.labels(store_type=store_type, operation=operation).observe(duration)
+    VECTOR_STORE_QUERIES.labels(store_type=store_type, operation=operation).inc()
+    if num_results is not None:
+        DOCUMENTS_RETRIEVED.labels(store_type=store_type).observe(num_results)
+
+
+def record_agent_step(agent_type: str, step_name: str, duration: float, status: str = "success"):
+    """Record a single step/node inside an agent pipeline (e.g. AgenticRAG's
+    analyze_query, retrieve, route_task, validate, generate_response)."""
+    AGENT_STEP_DURATION_SECONDS.labels(agent_type=agent_type, step_name=step_name).observe(duration)
+    AGENT_INVOCATIONS.labels(agent_type=agent_type, status=status).inc()
 
 
 def record_document_upload(file_type: str, total_duration: float, num_chunks: int):

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from typing import Optional
 
@@ -40,7 +41,11 @@ from langchain_core.embeddings import Embeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
+from src.observability import metrics, tracing
+
 logger = logging.getLogger(__name__)
+
+_STORE_TYPE = "pinecone"
 
 # Dimensions for common OpenAI embedding models
 _EMBEDDING_DIMENSIONS = {
@@ -151,10 +156,19 @@ class PineconeVectorStoreManager:
         ids = self._make_vector_ids(documents)
         logger.info("Upserting %d chunks to Pinecone.", len(documents))
 
-        self.vector_store.add_documents(
-            documents=documents,
-            ids=ids,
-            namespace=self.namespace,
+        start = time.perf_counter()
+        with tracing.start_span(
+            "vector_store.upsert",
+            {"store_type": _STORE_TYPE, "num_documents": len(documents), "index": self.index_name},
+        ):
+            self.vector_store.add_documents(
+                documents=documents,
+                ids=ids,
+                namespace=self.namespace,
+            )
+        duration = time.perf_counter() - start
+        metrics.record_vector_query(
+            store_type=_STORE_TYPE, operation="upsert", duration=duration, num_results=len(documents)
         )
 
         logger.info("Upsert complete.")
@@ -170,12 +184,22 @@ class PineconeVectorStoreManager:
 
         search_filter = {"doc_id": {"$eq": doc_id}} if doc_id else None
 
-        return self.vector_store.similarity_search(
-            query=query,
-            k=k,
-            filter=search_filter,
-            namespace=self.namespace,
+        start = time.perf_counter()
+        with tracing.start_span(
+            "vector_store.query",
+            {"store_type": _STORE_TYPE, "k": k, "index": self.index_name},
+        ):
+            results = self.vector_store.similarity_search(
+                query=query,
+                k=k,
+                filter=search_filter,
+                namespace=self.namespace,
+            )
+        duration = time.perf_counter() - start
+        metrics.record_vector_query(
+            store_type=_STORE_TYPE, operation="query", duration=duration, num_results=len(results)
         )
+        return results
 
     # --------------------------------------------------
 
@@ -188,12 +212,22 @@ class PineconeVectorStoreManager:
 
         search_filter = {"doc_id": {"$eq": doc_id}} if doc_id else None
 
-        return self.vector_store.similarity_search_with_score(
-            query=query,
-            k=k,
-            filter=search_filter,
-            namespace=self.namespace,
+        start = time.perf_counter()
+        with tracing.start_span(
+            "vector_store.query_with_score",
+            {"store_type": _STORE_TYPE, "k": k, "index": self.index_name},
+        ):
+            results = self.vector_store.similarity_search_with_score(
+                query=query,
+                k=k,
+                filter=search_filter,
+                namespace=self.namespace,
+            )
+        duration = time.perf_counter() - start
+        metrics.record_vector_query(
+            store_type=_STORE_TYPE, operation="query_with_score", duration=duration, num_results=len(results)
         )
+        return results
 
     # --------------------------------------------------
 
@@ -233,28 +267,41 @@ class PineconeVectorStoreManager:
         prefix  = f"{doc_id}#" if doc_id else ""
         all_ids: list[str] = []
 
-        for batch in self._index.list(
-            prefix=prefix,
-            namespace=self.namespace,
+        start = time.perf_counter()
+        with tracing.start_span(
+            "vector_store.fetch_all",
+            {"store_type": _STORE_TYPE, "doc_id": doc_id or "all", "index": self.index_name},
         ):
-            all_ids.extend(batch)
-
-        if not all_ids:
-            return []
-
-        documents: list[Document] = []
-        batch_size = 1_000          # Pinecone fetch limit
-
-        for i in range(0, len(all_ids), batch_size):
-            response = self._index.fetch(
-                ids=all_ids[i : i + batch_size],
+            for batch in self._index.list(
+                prefix=prefix,
                 namespace=self.namespace,
-            )
-            for vector in response.vectors.values():
-                metadata    = dict(vector.metadata or {})
-                page_content = metadata.pop("text", "")
-                documents.append(Document(page_content=page_content, metadata=metadata))
+            ):
+                all_ids.extend(batch)
 
+            if not all_ids:
+                duration = time.perf_counter() - start
+                metrics.record_vector_query(
+                    store_type=_STORE_TYPE, operation="fetch_all", duration=duration, num_results=0
+                )
+                return []
+
+            documents: list[Document] = []
+            batch_size = 1_000          # Pinecone fetch limit
+
+            for i in range(0, len(all_ids), batch_size):
+                response = self._index.fetch(
+                    ids=all_ids[i : i + batch_size],
+                    namespace=self.namespace,
+                )
+                for vector in response.vectors.values():
+                    metadata    = dict(vector.metadata or {})
+                    page_content = metadata.pop("text", "")
+                    documents.append(Document(page_content=page_content, metadata=metadata))
+
+        duration = time.perf_counter() - start
+        metrics.record_vector_query(
+            store_type=_STORE_TYPE, operation="fetch_all", duration=duration, num_results=len(documents)
+        )
         logger.info("Fetched %d chunks from Pinecone.", len(documents))
         return documents
 
@@ -273,11 +320,20 @@ class PineconeVectorStoreManager:
 
         logger.info("Deleting %d chunks for doc_id=%s.", len(ids_to_delete), doc_id)
 
-        batch_size = 1_000
-        for i in range(0, len(ids_to_delete), batch_size):
-            self._index.delete(
-                ids=ids_to_delete[i : i + batch_size],
-                namespace=self.namespace,
-            )
+        start = time.perf_counter()
+        with tracing.start_span(
+            "vector_store.delete",
+            {"store_type": _STORE_TYPE, "doc_id": doc_id, "num_vectors": len(ids_to_delete)},
+        ):
+            batch_size = 1_000
+            for i in range(0, len(ids_to_delete), batch_size):
+                self._index.delete(
+                    ids=ids_to_delete[i : i + batch_size],
+                    namespace=self.namespace,
+                )
+        duration = time.perf_counter() - start
+        metrics.record_vector_query(
+            store_type=_STORE_TYPE, operation="delete", duration=duration, num_results=len(ids_to_delete)
+        )
 
         logger.info("Document %s deleted.", doc_id)

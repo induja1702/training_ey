@@ -1,12 +1,14 @@
 import json
 import logging
 import re
+import time
 from enum import Enum
 
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
 from src.observability.langsmith import traceable_operation
+from src.observability import metrics, tracing
 from docs.vector_store_pinecone import PineconeVectorStoreManager
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,7 @@ class AgenticRAG:
         metadata={"component": "agentic_rag"},
     )
     def analyze_query(self, question: str) -> list[str]:
+        step_start = time.perf_counter()
         prompt = (
             "You are a query analysis agent. Decompose the following user question into up to three "
             "retrieval-guided subquestions. Return each subquestion on a new line without numbering or "
@@ -90,28 +93,34 @@ class AgenticRAG:
             f"Question: {question}\n"
             "Subquestions:"
         )
-        response = self.client.responses.create(
-            model=self.model,
-            input=[
-                {"role": "system", "content": "Decompose a user query into subquestions for retrieval."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_output_tokens=200,
-        )
+        with tracing.start_span("agentic_rag.analyze_query", {"question_len": len(question)}):
+            response = self.client.responses.create(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": "Decompose a user query into subquestions for retrieval."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_output_tokens=200,
+            )
         self._usage_log.append(_extract_usage(response))
         output_text = _extract_response_text(response)
         lines = [line.strip("- ").strip() for line in output_text.splitlines() if line.strip()]
+        metrics.record_agent_step("agentic_rag", "analyze_query", time.perf_counter() - step_start)
         return lines or [question]
 
     # ------------------------------------------------------------------
     # 2. Retrieve
     # ------------------------------------------------------------------
     def retrieve(self, subquestions: list[str]) -> list[dict]:
+        step_start = time.perf_counter()
         retrieved = []
-        for sub in subquestions:
-            docs = self.vector_store.similarity_search(query=sub, k=self.top_k)
-            retrieved.append({"subquestion": sub, "docs": docs})
+        with tracing.start_span("agentic_rag.retrieve", {"num_subquestions": len(subquestions)}):
+            for sub in subquestions:
+                with tracing.start_span("agentic_rag.retrieve.subquestion", {"subquestion_len": len(sub)}):
+                    docs = self.vector_store.similarity_search(query=sub, k=self.top_k)
+                retrieved.append({"subquestion": sub, "docs": docs})
+        metrics.record_agent_step("agentic_rag", "retrieve", time.perf_counter() - step_start)
         return retrieved
 
     @staticmethod
@@ -186,19 +195,22 @@ Decide which specialist agent should handle the question. Choose exactly one:
 Return ONLY valid JSON in this exact shape:
 {"task": "comparison", "reason": "short justification"}
 """
-        response = self.client.responses.create(
-            model=self.model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": question},
-            ],
-            temperature=0.0,
-            max_output_tokens=150,
-        )
+        step_start = time.perf_counter()
+        with tracing.start_span("agentic_rag.route_task", {"question_len": len(question)}):
+            response = self.client.responses.create(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": question},
+                ],
+                temperature=0.0,
+                max_output_tokens=150,
+            )
         self._usage_log.append(_extract_usage(response))
         text = _extract_response_text(response).strip()
         if not text:
             logger.warning("Task routing returned empty text, defaulting to general.")
+            metrics.record_agent_step("agentic_rag", "route_task", time.perf_counter() - step_start, status="error")
             return TaskRouteResult(task=TaskType.GENERAL, reason="Fallback due to empty router output")
 
         match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -206,9 +218,12 @@ Return ONLY valid JSON in this exact shape:
 
         try:
             payload = json.loads(json_text)
-            return TaskRouteResult.model_validate(payload)
+            result = TaskRouteResult.model_validate(payload)
+            metrics.record_agent_step("agentic_rag", "route_task", time.perf_counter() - step_start)
+            return result
         except Exception as e:
             logger.exception("Task routing failed, defaulting to general: %s", e)
+            metrics.record_agent_step("agentic_rag", "route_task", time.perf_counter() - step_start, status="error")
             return TaskRouteResult(task=TaskType.GENERAL, reason="Fallback due to parsing failure")
 
     # ------------------------------------------------------------------
@@ -220,6 +235,7 @@ Return ONLY valid JSON in this exact shape:
         metadata={"component": "agentic_rag"},
     )
     def _run_comparison_agent(self, question: str, context: str, history_section: str) -> str:
+        step_start = time.perf_counter()
         prompt = (
             "You are the Comparison Agent for a contract intelligence system. Using only the provided "
             "passages, compare the relevant contracts/clauses/terms in the question. Clearly list "
@@ -228,16 +244,18 @@ Return ONLY valid JSON in this exact shape:
             f"{history_section}"
             f"{context}\n\nQuestion: {question}\nAnswer:"
         )
-        response = self.client.responses.create(
-            model=self.model,
-            input=[
-                {"role": "system", "content": "You are an expert contract comparison assistant."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            max_output_tokens=600,
-        )
+        with tracing.start_span("agentic_rag.comparison_agent", {"model": self.model}):
+            response = self.client.responses.create(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": "You are an expert contract comparison assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                max_output_tokens=600,
+            )
         self._usage_log.append(_extract_usage(response))
+        metrics.record_agent_step("agentic_rag", "comparison_agent", time.perf_counter() - step_start)
         return _extract_response_text(response).strip()
 
     @traceable_operation(
@@ -246,6 +264,7 @@ Return ONLY valid JSON in this exact shape:
         metadata={"component": "agentic_rag"},
     )
     def _run_compliance_agent(self, question: str, context: str, history_section: str) -> str:
+        step_start = time.perf_counter()
         prompt = (
             "You are the Compliance Agent for a contract intelligence system. Using only the provided "
             "passages, assess the compliance/regulatory/risk question carefully. Cite the specific clause "
@@ -254,16 +273,18 @@ Return ONLY valid JSON in this exact shape:
             f"{history_section}"
             f"{context}\n\nQuestion: {question}\nAnswer:"
         )
-        response = self.client.responses.create(
-            model=self.model,
-            input=[
-                {"role": "system", "content": "You are an expert contract compliance and risk assistant."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            max_output_tokens=600,
-        )
+        with tracing.start_span("agentic_rag.compliance_agent", {"model": self.model}):
+            response = self.client.responses.create(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": "You are an expert contract compliance and risk assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                max_output_tokens=600,
+            )
         self._usage_log.append(_extract_usage(response))
+        metrics.record_agent_step("agentic_rag", "compliance_agent", time.perf_counter() - step_start)
         return _extract_response_text(response).strip()
 
     @traceable_operation(
@@ -272,6 +293,7 @@ Return ONLY valid JSON in this exact shape:
         metadata={"component": "agentic_rag"},
     )
     def _run_general_agent(self, question: str, context: str, history_section: str) -> str:
+        step_start = time.perf_counter()
         prompt = (
             "You are an expert contract reasoning assistant. Use the provided passages to answer the "
             "user's original question. Explicitly reference the source names and verify the answer "
@@ -279,16 +301,18 @@ Return ONLY valid JSON in this exact shape:
             f"{history_section}"
             f"{context}\n\nQuestion: {question}\nAnswer:"
         )
-        response = self.client.responses.create(
-            model=self.model,
-            input=[
-                {"role": "system", "content": "You are an expert assistant that synthesizes multiple documents and validates citations."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            max_output_tokens=600,
-        )
+        with tracing.start_span("agentic_rag.general_agent", {"model": self.model}):
+            response = self.client.responses.create(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": "You are an expert assistant that synthesizes multiple documents and validates citations."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                max_output_tokens=600,
+            )
         self._usage_log.append(_extract_usage(response))
+        metrics.record_agent_step("agentic_rag", "general_agent", time.perf_counter() - step_start)
         return _extract_response_text(response).strip()
 
     @traceable_operation(
@@ -297,11 +321,12 @@ Return ONLY valid JSON in this exact shape:
         metadata={"component": "agentic_rag"},
     )
     def run_specialist_agent(self, task: TaskType, question: str, context: str, history_section: str) -> str:
-        if task == TaskType.COMPARISON:
-            return self._run_comparison_agent(question, context, history_section)
-        if task == TaskType.COMPLIANCE:
-            return self._run_compliance_agent(question, context, history_section)
-        return self._run_general_agent(question, context, history_section)
+        with tracing.start_span("agentic_rag.run_specialist_agent", {"task": task.value}):
+            if task == TaskType.COMPARISON:
+                return self._run_comparison_agent(question, context, history_section)
+            if task == TaskType.COMPLIANCE:
+                return self._run_compliance_agent(question, context, history_section)
+            return self._run_general_agent(question, context, history_section)
 
     # ------------------------------------------------------------------
     # 5. Validation
@@ -320,22 +345,27 @@ or qualifies unsupported claims, without introducing any new information not pre
 Return ONLY valid JSON in this exact shape:
 {"is_grounded": true, "issues": [], "corrected_answer": "..."}
 """
+        step_start = time.perf_counter()
         user_prompt = f"Context:\n{context}\n\nDraft answer:\n{draft_answer}\n\nValidate this draft."
-        response = self.client.responses.create(
-            model=self.model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.0,
-            max_output_tokens=700,
-        )
+        with tracing.start_span("agentic_rag.validate", {"model": self.model}):
+            response = self.client.responses.create(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+                max_output_tokens=700,
+            )
         self._usage_log.append(_extract_usage(response))
         text = _extract_response_text(response).strip()
         try:
-            return ValidationResult.model_validate(json.loads(text))
+            result = ValidationResult.model_validate(json.loads(text))
+            metrics.record_agent_step("agentic_rag", "validate", time.perf_counter() - step_start)
+            return result
         except (ValidationError, json.JSONDecodeError) as e:
             logger.exception("Validation failed, passing draft through unmodified: %s", e)
+            metrics.record_agent_step("agentic_rag", "validate", time.perf_counter() - step_start, status="error")
             return ValidationResult(is_grounded=True, issues=[], corrected_answer=draft_answer)
 
     # ------------------------------------------------------------------
@@ -347,21 +377,24 @@ Return ONLY valid JSON in this exact shape:
         metadata={"component": "agentic_rag"},
     )
     def generate_response(self, question: str, validated_answer: str) -> str:
+        step_start = time.perf_counter()
         prompt = (
             "Take the validated answer below and present it clearly and concisely to the user, in a tone "
             "appropriate to the original question. Do not add information beyond what's given.\n\n"
             f"Original question: {question}\n\nValidated answer:\n{validated_answer}\n\nFinal response:"
         )
-        response = self.client.responses.create(
-            model=self.model,
-            input=[
-                {"role": "system", "content": "You are the final Response Generator in a RAG pipeline."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-            max_output_tokens=600,
-        )
+        with tracing.start_span("agentic_rag.generate_response", {"model": self.model}):
+            response = self.client.responses.create(
+                model=self.model,
+                input=[
+                    {"role": "system", "content": "You are the final Response Generator in a RAG pipeline."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_output_tokens=600,
+            )
         self._usage_log.append(_extract_usage(response))
+        metrics.record_agent_step("agentic_rag", "generate_response", time.perf_counter() - step_start)
         return _extract_response_text(response).strip()
 
     # ------------------------------------------------------------------
@@ -371,20 +404,21 @@ Return ONLY valid JSON in this exact shape:
         self._usage_log = []
         history_section = f"Previous conversation:\n{history}\n\n" if history else ""
 
-        subquestions = self.analyze_query(question)
-        retrieved    = self.retrieve(subquestions)
-        sources      = self._build_sources(retrieved)
-        context      = self._build_context(sources)
+        with tracing.start_span("agentic_rag.run", {"question_len": len(question)}):
+            subquestions = self.analyze_query(question)
+            retrieved    = self.retrieve(subquestions)
+            sources      = self._build_sources(retrieved)
+            context      = self._build_context(sources)
 
-        route = self.route_task(question)
-        logger.info("Task routed: %s — %s", route.task.value, route.reason)
+            route = self.route_task(question)
+            logger.info("Task routed: %s — %s", route.task.value, route.reason)
 
-        draft_answer = self.run_specialist_agent(route.task, question, context, history_section)
+            draft_answer = self.run_specialist_agent(route.task, question, context, history_section)
 
-        validation = self.validate(draft_answer, context)
-        logger.info("Validation: grounded=%s issues=%s", validation.is_grounded, validation.issues)
+            validation = self.validate(draft_answer, context)
+            logger.info("Validation: grounded=%s issues=%s", validation.is_grounded, validation.issues)
 
-        final_answer = self.generate_response(question, validation.corrected_answer)
+            final_answer = self.generate_response(question, validation.corrected_answer)
 
         return {
             "answer":            final_answer,

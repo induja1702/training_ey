@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 from enum import Enum
 
 from dotenv import load_dotenv
@@ -8,6 +9,7 @@ from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
 from src.observability.langsmith import traceable_operation
+from src.observability import metrics, tracing
 
 logger = logging.getLogger(__name__)
 
@@ -146,22 +148,25 @@ IMPORTANT RULES FOR THE "task" FIELD:
 
 Return ONLY valid JSON matching the schema you were given.
 """
-        response = self.client.responses.create(
-            model=self.model,
-            temperature=self.temperature,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": query},
-            ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    **INTENT_JSON_SCHEMA,
-                }
-            },
-        )
+        start = time.perf_counter()
+        with tracing.start_span("intent_detection.detect", {"query_len": len(query)}):
+            response = self.client.responses.create(
+                model=self.model,
+                temperature=self.temperature,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": query},
+                ],
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        **INTENT_JSON_SCHEMA,
+                    }
+                },
+            )
 
         text = response.output_text.strip()
+        duration = time.perf_counter() - start
 
         try:
             result = IntentResult.model_validate(json.loads(text))
@@ -169,12 +174,26 @@ Return ONLY valid JSON matching the schema you were given.
                 "Intent detected | workflow=%s task=%s confidence=%.2f",
                 result.workflow, result.task, result.confidence,
             )
+            metrics.record_intent_detection(
+                workflow_type=result.workflow.value,
+                task_type=result.task.value,
+                confidence=result.confidence,
+                duration=duration,
+            )
             return result
         except (ValidationError, json.JSONDecodeError) as e:
             logger.exception("Intent detection failed: %s", e)
-            return IntentResult(
+            fallback = IntentResult(
                 workflow=Workflow.KNOWLEDGE_RAG,
                 task=TaskType.LOOKUP,
                 reason="Fallback due to parsing failure",
                 confidence=0.50,
             )
+            metrics.record_intent_detection(
+                workflow_type=fallback.workflow.value,
+                task_type=fallback.task.value,
+                confidence=fallback.confidence,
+                duration=duration,
+                fallback=True,
+            )
+            return fallback

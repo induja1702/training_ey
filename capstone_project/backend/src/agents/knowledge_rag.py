@@ -18,6 +18,7 @@ from openai import OpenAI
 
 from docs.vector_store_pinecone import PineconeVectorStoreManager
 from src.observability.langsmith import traceable_operation
+from src.observability import metrics, tracing
 
 logger = logging.getLogger(__name__)
 
@@ -176,32 +177,41 @@ class KnowledgeRAG:
             docs           : ranked list of Document objects
             retrieval_mode : 'hybrid' or 'dense' — useful for monitoring/logging
         """
-        if _HYBRID_AVAILABLE:
-            try:
-                retriever = build_hybrid_retriever(
-                    self.vector_store,
-                    k=self.k_initial,
-                    bm25_weight=self.bm25_weight,
-                    dense_weight=self.dense_weight,
-                )
-                candidates = retriever.invoke(query)
-                docs = _rerank(query, candidates, top_n=self.k_final)
-                logger.debug(
-                    "KnowledgeRAG: hybrid retrieval returned %d docs for query: %.80s",
-                    len(docs), query,
-                )
-                return docs, "hybrid"
-            except Exception as exc:
-                logger.warning(
-                    "KnowledgeRAG: hybrid retrieval failed (%s); falling back to dense.", exc
-                )
+        step_start = time.perf_counter()
+        with tracing.start_span("knowledge_rag.retrieve", {"query_len": len(query), "k_final": self.k_final}):
+            if _HYBRID_AVAILABLE:
+                try:
+                    with tracing.start_span("knowledge_rag.retrieve.hybrid_candidates", {"k_initial": self.k_initial}):
+                        retriever = build_hybrid_retriever(
+                            self.vector_store,
+                            k=self.k_initial,
+                            bm25_weight=self.bm25_weight,
+                            dense_weight=self.dense_weight,
+                        )
+                        candidates = retriever.invoke(query)
+                    with tracing.start_span("knowledge_rag.retrieve.rerank", {"num_candidates": len(candidates)}):
+                        docs = _rerank(query, candidates, top_n=self.k_final)
+                    logger.debug(
+                        "KnowledgeRAG: hybrid retrieval returned %d docs for query: %.80s",
+                        len(docs), query,
+                    )
+                    metrics.record_agent_step("knowledge_rag", "retrieve_hybrid", time.perf_counter() - step_start)
+                    return docs, "hybrid"
+                except Exception as exc:
+                    logger.warning(
+                        "KnowledgeRAG: hybrid retrieval failed (%s); falling back to dense.", exc
+                    )
+                    metrics.record_agent_step(
+                        "knowledge_rag", "retrieve_hybrid", time.perf_counter() - step_start, status="error"
+                    )
 
-        docs = self.vector_store.similarity_search(query=query, k=self.k_final)
-        if not docs:
-            logger.info("KnowledgeRAG: no documents retrieved for query: %.80s", query)
-        else:
-            logger.debug("KnowledgeRAG: dense retrieval returned %d docs.", len(docs))
-        return docs, "dense"
+            docs = self.vector_store.similarity_search(query=query, k=self.k_final)
+            if not docs:
+                logger.info("KnowledgeRAG: no documents retrieved for query: %.80s", query)
+            else:
+                logger.debug("KnowledgeRAG: dense retrieval returned %d docs.", len(docs))
+            metrics.record_agent_step("knowledge_rag", "retrieve_dense", time.perf_counter() - step_start)
+            return docs, "dense"
 
     @traceable_operation(
         name="KnowledgeRAG answer",
@@ -214,30 +224,35 @@ class KnowledgeRAG:
         docs: list[Document],
         history: Optional[str] = None,
     ) -> str:
-        context = _build_context(docs)
-        history_section = f"Previous conversation:\n{history}\n\n" if history else ""
+        with tracing.start_span("knowledge_rag.build_prompt", {"num_docs": len(docs)}):
+            context = _build_context(docs)
+            history_section = f"Previous conversation:\n{history}\n\n" if history else ""
 
-        user_prompt = (
-            f"{history_section}"
-            f"Context:\n{context}\n\n"
-            f"Question: {query}\n"
-            "Answer (cite every claim as [doc_id, page]):"
-        )
-
-        try:
-            response = self.client.responses.create(
-                model=self.model,
-                input=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user",   "content": user_prompt},
-                ],
-                temperature=self.temperature,
-                max_output_tokens=self.max_output_tokens,
+            user_prompt = (
+                f"{history_section}"
+                f"Context:\n{context}\n\n"
+                f"Question: {query}\n"
+                "Answer (cite every claim as [doc_id, page]):"
             )
+
+        llm_start = time.perf_counter()
+        try:
+            with tracing.start_span("knowledge_rag.answer.llm_call", {"model": self.model}):
+                response = self.client.responses.create(
+                    model=self.model,
+                    input=[
+                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "user",   "content": user_prompt},
+                    ],
+                    temperature=self.temperature,
+                    max_output_tokens=self.max_output_tokens,
+                )
         except Exception as exc:
+            metrics.record_llm_call(model=self.model, duration=time.perf_counter() - llm_start, operation="answer", error=type(exc).__name__)
             logger.error("KnowledgeRAG: LLM call failed for query: %.80s — %s", query, exc)
             raise
 
+        metrics.record_llm_call(model=self.model, duration=time.perf_counter() - llm_start, operation="answer")
         self.last_usage = _extract_usage(response)
         answer_text = _extract_response_text(response).strip()
         if not answer_text:
@@ -249,8 +264,9 @@ class KnowledgeRAG:
     def run(self, query: str, history: Optional[str] = None) -> dict:
         t0 = time.perf_counter()
 
-        docs, retrieval_mode = self.retrieve(query)
-        answer_text = self.answer(query, docs, history)
+        with tracing.start_span("knowledge_rag.run", {"query_len": len(query)}):
+            docs, retrieval_mode = self.retrieve(query)
+            answer_text = self.answer(query, docs, history)
 
         latency_ms = (time.perf_counter() - t0) * 1000
         logger.info(
