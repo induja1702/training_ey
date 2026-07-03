@@ -16,9 +16,8 @@ from typing import Optional
 from langchain_core.documents import Document
 from openai import OpenAI
 
-from src.observability.langsmith import traceable_operation
-# from docs.vector_store import FAISSVectorStore
 from docs.vector_store_pinecone import PineconeVectorStoreManager
+from src.observability.langsmith import traceable_operation
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +32,7 @@ except ImportError:
     _HYBRID_AVAILABLE = False
     logger.warning(
         "KnowledgeRAG: rank_bm25 / sentence-transformers not installed. "
-        "Falling back to dense-only FAISS retrieval. "
+        "Falling back to dense-only Pinecone retrieval. "
         "Install with: pip install rank_bm25 sentence-transformers"
     )
 
@@ -50,10 +49,6 @@ _SYSTEM_PROMPT = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Module-level helpers
-# ---------------------------------------------------------------------------
-
 def _extract_response_text(response) -> str:
     """Safely extract text from OpenAI Responses API response object."""
     if getattr(response, "output_text", None):
@@ -67,8 +62,17 @@ def _extract_response_text(response) -> str:
     return ""
 
 
+def _extract_usage(response) -> dict:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    return {
+        "input_tokens":  getattr(usage, "input_tokens", 0) or 0,
+        "output_tokens": getattr(usage, "output_tokens", 0) or 0,
+    }
+
+
 def _build_context(docs: list[Document]) -> str:
-    """Build a cited context block from retrieved documents or dict payloads."""
     if not docs:
         return "No relevant documents were retrieved."
     parts = []
@@ -93,7 +97,6 @@ def _build_context(docs: list[Document]) -> str:
 
 
 def _docs_to_sources(docs: list[Document]) -> list[dict]:
-    """Convert a document list to a serialisable source list for API responses."""
     sources = []
     for doc in docs:
         if isinstance(doc, dict):
@@ -132,22 +135,6 @@ class KnowledgeRAG:
         Hybrid  → EnsembleRetriever (BM25 + dense, configurable weights)
                   then cross-encoder rerank: k_initial candidates → k_final
         Fallback → FAISS similarity_search when hybrid deps are absent
-
-    Public API
-    ----------
-    retrieve(query)              -> tuple[list[Document], str]
-    answer(query, docs, history) -> str
-    run(query, history)          -> dict
-        {
-            "answer":  str,
-            "sources": list[dict],   # doc_id, page, filename, display
-            "docs":    list[Document],
-            "meta": {
-                "retrieval_mode": "hybrid" | "dense",
-                "docs_retrieved": int,
-                "latency_ms":     float,
-            }
-        }
     """
 
     def __init__(
@@ -155,8 +142,8 @@ class KnowledgeRAG:
         client: OpenAI,
         vector_store: PineconeVectorStoreManager,
         model: str = "gpt-4o",
-        k_initial: int = 20,        # candidates fetched before reranking
-        k_final: int | None = None,  # top-N kept after reranking (or dense top-K)
+        k_initial: int = 20,
+        k_final: int | None = None,
         bm25_weight: float = 0.4,
         dense_weight: float = 0.6,
         max_output_tokens: int = 600,
@@ -172,10 +159,8 @@ class KnowledgeRAG:
         self.dense_weight = dense_weight
         self.max_output_tokens = max_output_tokens
         self.temperature = temperature
+        self.last_usage = {"input_tokens": 0, "output_tokens": 0}
 
-    # ------------------------------------------------------------------
-    # Retrieve
-    # ------------------------------------------------------------------
     @traceable_operation(
         name="KnowledgeRAG retrieval",
         tags=["knowledge_rag", "retrieval"],
@@ -211,7 +196,6 @@ class KnowledgeRAG:
                     "KnowledgeRAG: hybrid retrieval failed (%s); falling back to dense.", exc
                 )
 
-        # Dense-only fallback
         docs = self.vector_store.similarity_search(query=query, k=self.k_final)
         if not docs:
             logger.info("KnowledgeRAG: no documents retrieved for query: %.80s", query)
@@ -219,9 +203,6 @@ class KnowledgeRAG:
             logger.debug("KnowledgeRAG: dense retrieval returned %d docs.", len(docs))
         return docs, "dense"
 
-    # ------------------------------------------------------------------
-    # Answer
-    # ------------------------------------------------------------------
     @traceable_operation(
         name="KnowledgeRAG answer",
         tags=["knowledge_rag", "llm"],
@@ -233,15 +214,6 @@ class KnowledgeRAG:
         docs: list[Document],
         history: Optional[str] = None,
     ) -> str:
-        """
-        Call the LLM with the retrieved context and return the answer string.
-
-        Parameters
-        ----------
-        query   : user question
-        docs    : retrieved Document objects (output of retrieve())
-        history : optional prior conversation turns as a plain string
-        """
         context = _build_context(docs)
         history_section = f"Previous conversation:\n{history}\n\n" if history else ""
 
@@ -263,45 +235,18 @@ class KnowledgeRAG:
                 max_output_tokens=self.max_output_tokens,
             )
         except Exception as exc:
-            logger.error(
-                "KnowledgeRAG: LLM call failed for query: %.80s — %s", query, exc
-            )
+            logger.error("KnowledgeRAG: LLM call failed for query: %.80s — %s", query, exc)
             raise
 
+        self.last_usage = _extract_usage(response)
         answer_text = _extract_response_text(response).strip()
         if not answer_text:
-            logger.warning(
-                "KnowledgeRAG: empty response from model for query: %.80s", query
-            )
+            logger.warning("KnowledgeRAG: empty response from model for query: %.80s", query)
             return "I couldn't generate an answer from the retrieved documents."
 
         return answer_text
 
-    # ------------------------------------------------------------------
-    # run — full pipeline in one call
-    # ------------------------------------------------------------------
     def run(self, query: str, history: Optional[str] = None) -> dict:
-        """
-        End-to-end RAG: retrieve → answer → return structured result.
-
-        Parameters
-        ----------
-        query   : user question
-        history : optional prior conversation as plain string
-
-        Returns
-        -------
-        {
-            "answer":  str,
-            "sources": list[dict],      # doc_id, page, filename, display label
-            "docs":    list[Document],  # raw LangChain docs for downstream use
-            "meta": {
-                "retrieval_mode": "hybrid" | "dense",
-                "docs_retrieved": int,
-                "latency_ms":     float,
-            }
-        }
-        """
         t0 = time.perf_counter()
 
         docs, retrieval_mode = self.retrieve(query)

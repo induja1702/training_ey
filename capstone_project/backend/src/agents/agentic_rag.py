@@ -7,7 +7,6 @@ from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
 from src.observability.langsmith import traceable_operation
-# from docs.vector_store import FAISSVectorStore
 from docs.vector_store_pinecone import PineconeVectorStoreManager
 
 logger = logging.getLogger(__name__)
@@ -23,6 +22,16 @@ def _extract_response_text(response) -> str:
                     if getattr(content_item, "type", None) == "output_text":
                         return getattr(content_item, "text", "")
     return ""
+
+
+def _extract_usage(response) -> dict:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    return {
+        "input_tokens":  getattr(usage, "input_tokens", 0) or 0,
+        "output_tokens": getattr(usage, "output_tokens", 0) or 0,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +72,7 @@ class AgenticRAG:
         self.vector_store = vector_store
         self.top_k = top_k
         self.model = model
+        self._usage_log: list[dict] = []
 
     # ------------------------------------------------------------------
     # 1. Query Analysis + Decompose
@@ -89,6 +99,7 @@ class AgenticRAG:
             temperature=0.0,
             max_output_tokens=200,
         )
+        self._usage_log.append(_extract_usage(response))
         output_text = _extract_response_text(response)
         lines = [line.strip("- ").strip() for line in output_text.splitlines() if line.strip()]
         return lines or [question]
@@ -106,6 +117,10 @@ class AgenticRAG:
     @staticmethod
     def _build_sources(retrieved: list[dict]) -> list[dict]:
         sources = []
+        # Each subquestion retrieves independently, so the same passage often
+        # comes back more than once across subquestions. Duplicate content
+        # adds no new information to the LLM's context, so it's paid for once.
+        seen_content: set[str] = set()
         for item in retrieved:
             if isinstance(item, dict) and "docs" in item:
                 docs = item["docs"]
@@ -121,22 +136,23 @@ class AgenticRAG:
                     page_number = metadata.get("page")
                     if page_number is not None:
                         source_name = f"{source_name} (page {page_number})"
-                    sources.append({
-                        "subquestion": subquestion,
-                        "source": source_name,
-                        "content": str(doc.get("content") or "").strip(),
-                    })
-                    continue
+                    content = str(doc.get("content") or "").strip()
+                else:
+                    metadata = getattr(doc, "metadata", None) or {}
+                    source_name = metadata.get("filename") or metadata.get("source") or "document"
+                    page_number = metadata.get("page")
+                    if page_number is not None:
+                        source_name = f"{source_name} (page {page_number})"
+                    content = getattr(doc, "page_content", "").strip()
 
-                metadata = getattr(doc, "metadata", None) or {}
-                source_name = metadata.get("filename") or metadata.get("source") or "document"
-                page_number = metadata.get("page")
-                if page_number is not None:
-                    source_name = f"{source_name} (page {page_number})"
+                if content and content in seen_content:
+                    continue
+                seen_content.add(content)
+
                 sources.append({
                     "subquestion": subquestion,
                     "source": source_name,
-                    "content": getattr(doc, "page_content", "").strip(),
+                    "content": content,
                 })
         return sources
 
@@ -179,12 +195,12 @@ Return ONLY valid JSON in this exact shape:
             temperature=0.0,
             max_output_tokens=150,
         )
+        self._usage_log.append(_extract_usage(response))
         text = _extract_response_text(response).strip()
         if not text:
             logger.warning("Task routing returned empty text, defaulting to general.")
             return TaskRouteResult(task=TaskType.GENERAL, reason="Fallback due to empty router output")
 
-        # Extract JSON object from any surrounding text or markdown fences.
         match = re.search(r"\{.*\}", text, re.DOTALL)
         json_text = match.group(0) if match else text
 
@@ -221,6 +237,7 @@ Return ONLY valid JSON in this exact shape:
             temperature=0.2,
             max_output_tokens=600,
         )
+        self._usage_log.append(_extract_usage(response))
         return _extract_response_text(response).strip()
 
     @traceable_operation(
@@ -246,6 +263,7 @@ Return ONLY valid JSON in this exact shape:
             temperature=0.2,
             max_output_tokens=600,
         )
+        self._usage_log.append(_extract_usage(response))
         return _extract_response_text(response).strip()
 
     @traceable_operation(
@@ -270,6 +288,7 @@ Return ONLY valid JSON in this exact shape:
             temperature=0.2,
             max_output_tokens=600,
         )
+        self._usage_log.append(_extract_usage(response))
         return _extract_response_text(response).strip()
 
     @traceable_operation(
@@ -311,6 +330,7 @@ Return ONLY valid JSON in this exact shape:
             temperature=0.0,
             max_output_tokens=700,
         )
+        self._usage_log.append(_extract_usage(response))
         text = _extract_response_text(response).strip()
         try:
             return ValidationResult.model_validate(json.loads(text))
@@ -341,12 +361,14 @@ Return ONLY valid JSON in this exact shape:
             temperature=0.3,
             max_output_tokens=600,
         )
+        self._usage_log.append(_extract_usage(response))
         return _extract_response_text(response).strip()
 
     # ------------------------------------------------------------------
     # Orchestration entry point
     # ------------------------------------------------------------------
     def run(self, question: str, history: str | None = None) -> dict:
+        self._usage_log = []
         history_section = f"Previous conversation:\n{history}\n\n" if history else ""
 
         subquestions = self.analyze_query(question)
@@ -374,4 +396,6 @@ Return ONLY valid JSON in this exact shape:
             "subquestions":      subquestions,
             "retrieved":         retrieved,
             "sources":           sources,
+            "input_tokens":      sum(u["input_tokens"] for u in self._usage_log),
+            "output_tokens":     sum(u["output_tokens"] for u in self._usage_log),
         }

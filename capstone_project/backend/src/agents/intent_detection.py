@@ -39,10 +39,7 @@ class IntentResult(BaseModel):
 
 
 # JSON Schema passed to the OpenAI API so the model is constrained at
-# generation time to only emit valid enum values. Previously, nothing
-# enforced the enum on the API side — Pydantic only validated after the
-# fact, so a response like "compliance reasoning" would cause a parse
-# failure and fall back to KnowledgeRAG even for complex queries.
+# generation time to only emit valid enum values.
 INTENT_JSON_SCHEMA = {
     "name": "intent_result",
     "strict": True,

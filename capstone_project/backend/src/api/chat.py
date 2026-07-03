@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import os
 import time
 from pathlib import Path
@@ -71,21 +71,29 @@ def _get_agents() -> tuple[IntentDetector, KnowledgeRAG, AgenticRAG]:
 def _build_sources(docs: list) -> tuple[list[str], list[dict]]:
     sources: list[str] = []
     source_payload: list[dict] = []
+    seen_content: set[str] = set()
     for item in docs:
         if isinstance(item, dict):
             content = item.get("content") or ""
             source_name = item.get("source") or "document"
-            sources.append(source_name)
-            source_payload.append({"source": source_name, "content": content})
-            continue
+        else:
+            meta = getattr(item, "metadata", None) or {}
+            source_name = meta.get("filename") or meta.get("source") or "document"
+            page = meta.get("page")
+            if page is not None:
+                source_name = f"{source_name} (page {int(page)})"
+            content = getattr(item, "page_content", "").strip()
 
-        meta = getattr(item, "metadata", None) or {}
-        name = meta.get("filename") or meta.get("source") or "document"
-        page = meta.get("page")
-        if page is not None:
-            name = f"{name} (page {page})"
-        sources.append(name)
-        source_payload.append({"source": name, "content": getattr(item, "page_content", "").strip()})
+        # Retrieval can surface the same passage more than once (re-uploads,
+        # overlapping chunks). Identical content adds no new information to
+        # the LLM's context, so it's dropped here rather than paid for twice.
+        content_key = content.strip()
+        if content_key and content_key in seen_content:
+            continue
+        seen_content.add(content_key)
+
+        sources.append(source_name)
+        source_payload.append({"source": source_name, "content": content})
     return sources, source_payload
 
 
@@ -132,34 +140,36 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
         intent.workflow.value, intent.confidence, intent.reason,
     )
 
-    try:
-        if intent.workflow == Workflow.KNOWLEDGE_RAG:
-            retrieval_result = knowledge_rag.retrieve(query)
-            if isinstance(retrieval_result, tuple):
-                docs, _ = retrieval_result
-            else:
-                docs = retrieval_result
-
-            if not docs:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="No relevant document chunks found for the query.",
-                )
-            sources, source_payload = _build_sources(docs)
-            answer = knowledge_rag.answer(query, source_payload, history_context)
+    if intent.workflow == Workflow.KNOWLEDGE_RAG:
+        retrieval_result = knowledge_rag.retrieve(query)
+        if isinstance(retrieval_result, tuple):
+            docs, _ = retrieval_result
         else:
-            agent_result = agentic_rag.run(query, history_context)
-            answer = agent_result.get("answer", "")
-            docs = []
-            for item in agent_result.get("retrieved", []):
-                docs.extend(item.get("docs", []))
-            sources, _ = _build_sources(docs)
-    except HTTPException:
-        metrics.CHAT_REQUESTS_TOTAL.labels(workflow_type=intent.workflow.value, status="error").inc()
-        raise
-    except Exception:
-        metrics.CHAT_ERRORS.labels(workflow_type=intent.workflow.value, error_type="unhandled").inc()
-        raise
+            docs = retrieval_result
+
+        if not docs:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No relevant document chunks found for the query.",
+            )
+        sources, source_payload = _build_sources(docs)
+        llm_start = time.perf_counter()
+        answer = knowledge_rag.answer(query, source_payload, history_context)
+        llm_latency_ms = (time.perf_counter() - llm_start) * 1000
+        usage = knowledge_rag.last_usage
+    else:
+        llm_start = time.perf_counter()
+        agent_result = agentic_rag.run(query, history_context)
+        llm_latency_ms = (time.perf_counter() - llm_start) * 1000
+        answer = agent_result.get("answer", "")
+        usage = {
+            "input_tokens":  agent_result.get("input_tokens", 0),
+            "output_tokens": agent_result.get("output_tokens", 0),
+        }
+        docs = []
+        for item in agent_result.get("retrieved", []):
+            docs.extend(item.get("docs", []))
+        sources, source_payload = _build_sources(docs)
 
     elapsed = time.perf_counter() - start
     logger.info(
@@ -178,8 +188,13 @@ async def chat_documents(request: ChatRequest) -> ChatResponse:
         query=query,
         answer=answer,
         sources=sources,
+        chunks=source_payload,
         intent=intent.workflow.value,
         intent_reason=intent.reason,
+        intent_confidence=intent.confidence,
+        llm_latency_ms=llm_latency_ms,
+        input_tokens=usage.get("input_tokens", 0),
+        output_tokens=usage.get("output_tokens", 0),
     )
 
 
@@ -197,9 +212,10 @@ async def get_session_history(session_id: str) -> SessionHistoryResponse:
     session = session_man.get_session_info(session_id)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+    history = session_man.get_history(session_id)
     return SessionHistoryResponse(
         session_id=session_id,
-        history=[ChatHistoryItem(**item) for item in session["history"]],
+        history=[ChatHistoryItem(**item) for item in history],
     )
 
 

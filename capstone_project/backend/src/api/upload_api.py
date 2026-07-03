@@ -69,16 +69,13 @@ def normalize_session_id(session_id: str) -> str | None:
         return None
 
 
-def _get_session_id(request: Request) -> str:
+def _resolve_session(raw_id: str | None) -> str:
     """
-    Resolve session_id from the X-Session-ID header.
-    Creates a new session if the header is absent or invalid.
+    Resolve or create a session from a raw session ID string.
+    Calls make_session so callers always get a valid session_id back.
     """
-    raw = request.headers.get("X-Session-ID", "")
-    normalized = normalize_session_id(raw)
-    if normalized and session_store.session_exists(normalized):
-        return normalized
-    return session_store.make_session()
+    normalized = normalize_session_id(raw_id or "")
+    return session_store.make_session(normalized, reset=False)
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +114,9 @@ def _get_session_id(request: Request) -> str:
 async def upload_documents(request: Request) -> UploadResponse:
     form       = await request.form()
     files      = form.getlist("files")
-    session_id = _get_session_id(request)          # FIX: was undefined
+    # Accept session_id from form data or X-Session-ID header
+    raw_session = str(form.get("session_id") or "") or request.headers.get("X-Session-ID", "")
+    session_id  = _resolve_session(raw_session)
 
     if not files:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files provided.")
@@ -162,7 +161,7 @@ async def upload_documents(request: Request) -> UploadResponse:
             vector_store.add_documents(chunks)
             logger.info("Stored %d chunks in Pinecone for doc_id '%s'.", chunk_count, file_id)
 
-            # ── 6. Upload to Azure Blob Storage ───────────────────────
+            # ── 6. Upload to Azure Blob Storage (optional) ────────────
             # blob_name = f"{stem}_{file_id}.pdf"
             # blob_url  = upload_blob(blob_name, data)
             # logger.info("Uploaded to blob: %s", blob_url)
@@ -183,7 +182,6 @@ async def upload_documents(request: Request) -> UploadResponse:
             uploaded.append(UploadedFile(
                 file_id       = file_id,
                 original_name = file.filename,
-                # blob_url      = blob_url,
                 size_bytes    = size,
                 page_count    = page_count,
                 chunk_count   = chunk_count,
@@ -239,7 +237,8 @@ async def upload_stream(request: Request):
     """
     form       = await request.form()
     files      = form.getlist("files")
-    session_id = _get_session_id(request)          # FIX: was undefined
+    raw_session = str(form.get("session_id") or "") or request.headers.get("X-Session-ID", "")
+    session_id  = _resolve_session(raw_session)
 
     if not files:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No file provided.")
@@ -300,11 +299,6 @@ async def upload_stream(request: Request):
             yield f"data: {json.dumps({'step': 5, 'status': 'done'})}\n\n"
             await asyncio.sleep(0)
 
-            # ── upload to blob & register ──────────────────────────────
-            # blob_name = f"{stem}_{file_id}.pdf"
-            # blob_url  = upload_blob(blob_name, data)
-            logger.info("Uploaded to doc")
-
             session_store.add_document(
                 session_id=session_id,
                 file_id=file_id,
@@ -321,7 +315,6 @@ async def upload_stream(request: Request):
             result = {
                 "file_id":       file_id,
                 "original_name": file.filename,
-                # "blob_url":      blob_url,
                 "size_bytes":    size,
                 "page_count":    page_count,
                 "chunk_count":   chunk_count,
@@ -371,7 +364,6 @@ async def delete_session_document(session_id: str, file_id: str):
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
 
-    # FIX: get_vector_store() takes no arguments
     try:
         vs = get_vector_store()
         vs.delete_document(file_id)

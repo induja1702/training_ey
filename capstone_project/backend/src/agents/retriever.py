@@ -3,20 +3,11 @@ retriever.py
 ------------
 Hybrid BM25 + dense retriever and cross-encoder reranker.
 
-Updated to work with PineconeVectorStoreManager (was FAISSVectorStore).
+Works with PineconeVectorStoreManager (.vector_store, .namespace, .get_all_documents()).
 
-The only meaningful change from the FAISS version:
-  - BM25 document source:  vector_store.get_all_documents()
-    instead of the internal  vector_store.vector_store.docstore._dict
-
-  - Optional doc_id scoping added to build_hybrid_retriever() so BM25
-    and dense retrieval can both be filtered to a single document.
-
-Dependencies (add to requirements.txt):
+Dependencies:
     rank_bm25>=0.2.2
     sentence-transformers>=2.7.0
-    langchain-pinecone>=0.2.0
-    pinecone>=5.0.0
 """
 
 from __future__ import annotations
@@ -31,7 +22,6 @@ from sentence_transformers import CrossEncoder
 
 logger = logging.getLogger(__name__)
 
-# Lazy-loaded singleton — model loads on first call (~200 MB, once per process)
 _cross_encoder: Optional[CrossEncoder] = None
 
 
@@ -45,8 +35,8 @@ def _get_cross_encoder() -> CrossEncoder:
 
 
 def build_hybrid_retriever(
-    vector_store,                    # PineconeVectorStoreManager instance
-    doc_id: Optional[str] = None,   # Scope both retrievers to one document
+    vector_store,
+    doc_id: Optional[str] = None,
     k: int = 20,
     bm25_weight: float = 0.4,
     dense_weight: float = 0.6,
@@ -57,14 +47,6 @@ def build_hybrid_retriever(
     BM25 handles exact-match terms ("Effective Date", "Force Majeure").
     Dense handles semantic similarity.
     Weights drive Reciprocal Rank Fusion inside EnsembleRetriever.
-
-    Change from FAISS version
-    ─────────────────────────
-    FAISS:   all_docs = list(vector_store.vector_store.docstore._dict.values())
-    Pinecone: all_docs = vector_store.get_all_documents(doc_id=doc_id)
-
-    Pinecone's list + fetch APIs transfer only IDs then metadata — no
-    embedding vectors are downloaded — so this is relatively lightweight.
 
     NOTE: rebuild this retriever after each upload batch; BM25 is a
     snapshot of the index at construction time.
@@ -110,8 +92,6 @@ def rerank(
 
     The cross-encoder scores (query, passage) pairs jointly, catching
     relevance signals cosine similarity misses (negation, specificity).
-
-    No changes from the FAISS version — this function is vector-store agnostic.
     """
     if not docs:
         return []
