@@ -1,0 +1,129 @@
+{
+  "endpoint": "upload",
+  "base_url": "http://localhost:8000",
+  "total_requests": 10,
+  "concurrency": 5,
+  "total_time": 208.81146609999996,
+  "results": [
+    {
+      "idx": 4,
+      "offset": 0.01836580000235699,
+      "success": true,
+      "latency": 81.50919029999932,
+      "status": 200,
+      "session_id": "bacd1bd8-bb81-46f7-a5aa-1466a08bb0a3",
+      "chunk_count": null,
+      "page_count": null,
+      "detail": "",
+      "filename": "suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf"
+    },
+    {
+      "idx": 2,
+      "offset": 0.015672000001359265,
+      "success": true,
+      "latency": 81.51414239999576,
+      "status": 200,
+      "session_id": "65c67011-68cb-4719-b369-769de95886f0",
+      "chunk_count": null,
+      "page_count": null,
+      "detail": "",
+      "filename": "suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf"
+    },
+    {
+      "idx": 1,
+      "offset": 0.014361000001372304,
+      "success": true,
+      "latency": 139.2631601999965,
+      "status": 200,
+      "session_id": "18119680-71b1-45d7-8e23-e5e4b5f66146",
+      "chunk_count": null,
+      "page_count": null,
+      "detail": "",
+      "filename": "suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf"
+    },
+    {
+      "idx": 3,
+      "offset": 0.016540000004169997,
+      "success": true,
+      "latency": 139.26348279999365,
+      "status": 200,
+      "session_id": "8edede28-b359-4b56-bd29-8303b1f3271f",
+      "chunk_count": null,
+      "page_count": null,
+      "detail": "",
+      "filename": "suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf"
+    },
+    {
+      "idx": 5,
+      "offset": 0.018860600001062267,
+      "success": true,
+      "latency": 139.26149910000095,
+      "status": 200,
+      "session_id": "4d19942b-a0e3-4461-aa84-7d23f6b12e04",
+      "chunk_count": null,
+      "page_count": null,
+      "detail": "",
+      "filename": "suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf"
+    },
+    {
+      "idx": 6,
+      "offset": 81.52837189999991,
+      "success": true,
+      "latency": 57.75964689999819,
+      "status": 200,
+      "session_id": "a13c03c3-06f8-44df-899f-71f0b4a6738c",
+      "chunk_count": null,
+      "page_count": null,
+      "detail": "",
+      "filename": "suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf"
+    },
+    {
+      "idx": 7,
+      "offset": 81.5309619000036,
+      "success": true,
+      "latency": 57.757555399999546,
+      "status": 200,
+      "session_id": "c68b53ad-d9a1-4405-85b5-a51cadd67c94",
+      "chunk_count": null,
+      "page_count": null,
+      "detail": "",
+      "filename": "suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf"
+    },
+    {
+      "idx": 8,
+      "offset": 139.2790965000022,
+      "success": true,
+      "latency": 49.527306600000884,
+      "status": 200,
+      "session_id": "d080fed0-9a2b-431b-bc23-73ff0a3b3312",
+      "chunk_count": null,
+      "page_count": null,
+      "detail": "",
+      "filename": "suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf"
+    },
+    {
+      "idx": 9,
+      "offset": 139.2827271999995,
+      "success": true,
+      "latency": 49.53243559999828,
+      "status": 200,
+      "session_id": "d890c208-0701-47b2-84d8-2b0528e5e581",
+      "chunk_count": null,
+      "page_count": null,
+      "detail": "",
+      "filename": "suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf"
+    },
+    {
+      "idx": 10,
+      "offset": 139.28379770000174,
+      "success": true,
+      "latency": 49.531943499998306,
+      "status": 200,
+      "session_id": "1e1330f0-71e5-4465-91d5-94cb8179ddd5",
+      "chunk_count": null,
+      "page_count": null,
+      "detail": "",
+      "filename": "suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf"
+    }
+  ]
+}

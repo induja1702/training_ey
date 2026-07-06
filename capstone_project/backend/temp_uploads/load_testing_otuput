@@ -1,0 +1,134 @@
+=======================================================
+LOAD TEST REPORT
+=======================================================
+Total wall time: 253.06s
+
+--- CHAT ---
+  Requests:        30
+  Successful:      30
+  Failed:          0
+  Throughput:      0.12 req/s
+  Latency avg:     8.44s
+  Latency median:  4.04s
+  Latency min/max: 2.68s / 100.62s
+  Latency p95/p99: 30.21s / 100.62s
+
+--- CHAT — intent=KnowledgeRAG ---
+  Requests:        30
+  Successful:      30
+  Failed:          0
+  Throughput:      0.12 req/s
+  Latency avg:     8.44s
+  Latency median:  4.04s
+  Latency min/max: 2.68s / 100.62s
+  Latency p95/p99: 30.21s / 100.62s
+
+
+  python load_test_upload_api.py --base-url http://localhost:8000 --pdf temp_uploads/suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf --requests 10 --concurrency 5 --verbose
+Load testing UPLOAD endpoint: http://localhost:8000/upload/
+  files:       ['suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf']
+  requests:    10
+  concurrency: 5
+  #3   OK    33.70s  file=suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf  pages=None  chunks=None
+  #5   OK    33.70s  file=suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf  pages=None  chunks=None
+  #2   OK    43.22s  file=suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf  pages=None  chunks=None
+  #1   OK    43.23s  file=suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf  pages=None  chunks=None
+  #4   OK    43.23s  file=suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf  pages=None  chunks=None
+  #7   OK     9.53s  file=suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf  pages=None  chunks=None
+  #6   OK     9.53s  file=suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf  pages=None  chunks=None
+  #8   OK     5.50s  file=suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf  pages=None  chunks=None
+  #9   OK     5.49s  file=suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf  pages=None  chunks=None
+  #10  OK     5.49s  file=suncor-general-terms-and-conditions-en_2533e3f3-f789-4265-9f28-e87f13835158.pdf  pages=None  chunks=None
+
+=======================================================
+UPLOAD LOAD TEST REPORT
+=======================================================
+Total requests:   10
+Concurrency:      5
+Total wall time:  48.73s
+Throughput:       0.21 req/s
+Successful:       10
+Failed:           0
+
+Latency (upload -> parse -> chunk -> embed -> store, full round trip):
+  avg:    23.26s
+  median: 21.61s
+  min/max:5.49s / 43.23s
+  p95/p99:43.23s / 43.23s
+=======================================================
+
+
+(cap_venv) PS C:\Users\Administrator\Downloads\training_ey\capstone_project\backend> python load_test_chat_api.py --base-url http://localhost:8000 --session-id 2533e3f3-f789-4265-9f28-e87f13835158 --requests 50 --concurrency 10 --verbose
+Load testing CHAT endpoint: http://localhost:8000/chat/
+  session_id:  2533e3f3-f789-4265-9f28-e87f13835158
+  requests:    50
+  concurrency: 10
+  #9   OK    28.45s  intent=KnowledgeRAG
+  #6   OK    28.45s  intent=KnowledgeRAG
+  #8   OK    28.45s  intent=KnowledgeRAG
+  #7   OK    28.45s  intent=KnowledgeRAG
+  #2   OK    28.45s  intent=KnowledgeRAG
+  #1   OK    76.69s  intent=KnowledgeRAG
+  #3   OK    76.68s  intent=KnowledgeRAG
+  #10  OK    76.68s  intent=KnowledgeRAG
+  #5   OK    76.68s  intent=KnowledgeRAG
+  #4   OK    76.68s  intent=KnowledgeRAG
+  #12  OK    48.24s  intent=KnowledgeRAG
+  #11  OK    48.24s  intent=KnowledgeRAG
+  #13  OK    48.24s  intent=KnowledgeRAG
+  #14  OK    48.24s  intent=KnowledgeRAG
+  #15  OK    48.24s  intent=KnowledgeRAG
+  #16  OK    53.18s  intent=KnowledgeRAG
+  #17  OK    53.18s  intent=KnowledgeRAG
+  #18  OK    53.18s  intent=KnowledgeRAG
+  #22  OK    53.18s  intent=KnowledgeRAG
+  #19  OK    53.19s  intent=KnowledgeRAG
+  #20  OK    53.19s  intent=KnowledgeRAG
+  #21  OK    53.19s  intent=KnowledgeRAG
+  #23  OK    53.18s  intent=KnowledgeRAG
+  #24  OK    53.19s  intent=KnowledgeRAG
+  #25  OK    53.19s  intent=KnowledgeRAG
+  #26  OK    58.13s  intent=KnowledgeRAG
+  #27  OK    58.13s  intent=KnowledgeRAG
+  #28  OK    58.13s  intent=KnowledgeRAG
+  #31  OK    58.13s  intent=KnowledgeRAG
+  #29  OK    58.13s  intent=KnowledgeRAG
+  #30  OK    58.13s  intent=KnowledgeRAG
+  #32  OK    58.13s  intent=KnowledgeRAG
+  #33  OK    58.13s  intent=KnowledgeRAG
+  #34  OK    58.13s  intent=KnowledgeRAG
+  #35  OK    58.13s  intent=KnowledgeRAG
+  #36  OK    45.74s  intent=KnowledgeRAG
+  #37  OK    45.74s  intent=KnowledgeRAG
+  #38  OK    45.74s  intent=KnowledgeRAG
+  #40  OK    45.74s  intent=KnowledgeRAG
+  #41  OK    45.74s  intent=KnowledgeRAG
+  #39  OK    45.74s  intent=KnowledgeRAG
+  #42  OK    45.74s  intent=KnowledgeRAG
+  #43  OK    45.74s  intent=KnowledgeRAG
+  #44  OK    45.74s  intent=KnowledgeRAG
+  #45  OK    45.74s  intent=KnowledgeRAG
+  #46  OK    31.05s  intent=KnowledgeRAG
+  #47  OK    31.05s  intent=KnowledgeRAG
+  #48  OK    31.05s  intent=KnowledgeRAG
+  #49  OK    31.05s  intent=KnowledgeRAG
+  #50  OK    31.05s  intent=KnowledgeRAG
+
+=======================================================
+CHAT LOAD TEST REPORT
+=======================================================
+Total requests:   50
+Concurrency:      10
+Total wall time:  264.80s
+Throughput:       0.19 req/s
+Successful:       50
+Failed:           0
+
+Latency (end-to-end HTTP round trip):
+  avg:    49.85s
+  median: 50.71s
+  min/max:28.45s / 76.69s
+  p95/p99:76.68s / 76.69s
+
+  Workflow 'KnowledgeRAG': 50 requests, avg latency 49.85s
+=======================================================
