@@ -406,6 +406,11 @@ section[data-testid="stBottom"],
 }
 h1,h2,h3,h4,h5,h6 { color:#f0f0f0 !important; }
 [data-testid="stMarkdown"] p { color:#f0f0f0 !important; }
+[data-testid="stMarkdown"] table { color:#f0f0f0 !important; border-collapse:collapse !important; }
+[data-testid="stMarkdown"] th, [data-testid="stMarkdown"] td {
+  color:#f0f0f0 !important; border:0.5px solid #333 !important; padding:6px 10px !important;
+}
+[data-testid="stMarkdown"] th { background:#1a1a1a !important; font-weight:600 !important; }
 .stCaption p { color:#999 !important; font-size:11px !important; }
 hr { border-color:#2e2e2e !important; margin:12px 0 !important; }
 
@@ -601,39 +606,6 @@ def _ragas_color(value):
     return "#4CAF50" if value >= 0.8 else ("#FF9800" if value >= 0.5 else "#F44336")
 
 
-def _latency_color(seconds):
-    if seconds is None:
-        return "#666666"
-    return "#4CAF50" if seconds < 5 else ("#FF9800" if seconds < 15 else "#F44336")
-
-
-def _metric_card_html(label: str, display: str, color: str) -> str:
-    return (
-        f'<div class="ragas-card"><div style="font-size:20px;font-weight:600;color:{color};">'
-        f'{display}</div><div style="font-size:10px;color:#888;text-transform:uppercase;'
-        f'letter-spacing:.05em;margin-top:3px;">{label}</div></div>'
-    )
-
-
-def _pipeline_metrics_html(msg: dict) -> str:
-    confidence    = msg.get("intent_confidence", 0.0)
-    latency_s     = msg.get("llm_latency_ms", 0.0) / 1000
-    input_tokens  = msg.get("input_tokens", 0)
-    output_tokens = msg.get("output_tokens", 0)
-
-    cards = "".join([
-        _metric_card_html("Intent Confidence", f"{confidence:.0%}", _ragas_color(confidence)),
-        _metric_card_html("LLM Latency", f"{latency_s:.2f}s", _latency_color(latency_s)),
-        _metric_card_html("Input Tokens", f"{input_tokens:,}", "#F5C518"),
-        _metric_card_html("Output Tokens", f"{output_tokens:,}", "#F5C518"),
-    ])
-    return (
-        '<div style="font-size:10px;color:#888;font-weight:600;text-transform:uppercase;'
-        'letter-spacing:.06em;margin:8px 0 6px;">Pipeline metrics</div>'
-        f'<div style="display:flex;gap:10px;margin-bottom:4px;">{cards}</div>'
-    )
-
-
 def _ragas_metrics_html(score) -> str:
     metrics = [
         ("Faithfulness", score.faithfulness),
@@ -649,11 +621,7 @@ def _ragas_metrics_html(score) -> str:
         f'letter-spacing:.05em;margin-top:3px;">{label}</div></div>'
         for label, v in metrics
     )
-    return (
-        f'<div style="font-size:10px;color:#26C6DA;font-weight:600;text-transform:uppercase;'
-        f'letter-spacing:.06em;margin:10px 0 6px;">RAGAS · judged by GPT-4o mini</div>'
-        f'<div style="display:flex;gap:10px;margin-bottom:10px;">{cards}</div>'
-    )
+    return f'<div style="display:flex;gap:10px;margin-bottom:10px;">{cards}</div>'
 
 
 def _ragas_chunks_html(chunks: list) -> str:
@@ -1090,18 +1058,16 @@ elif st.session_state.screen == "chat":
                 st.markdown(f'<div style="margin-top:8px;">{chips}</div>', unsafe_allow_html=True)
 
             if msg["role"] == "assistant":
-                st.markdown(_pipeline_metrics_html(msg), unsafe_allow_html=True)
-
                 st.markdown('<div class="eval-btn">', unsafe_allow_html=True)
                 if st.button(
-                    "📊 Evaluate (RAGAS · GPT-4o mini)",
+                    "📊 Evaluate RAGAS",
                     key=f"eval_{active_key}_{msg_idx}",
                 ):
                     question_text = messages[msg_idx - 1]["content"]
                     contexts = [
                         c.get("content", "") for c in msg.get("chunks", []) if c.get("content")
                     ]
-                    with st.spinner("Judging with GPT-4o mini…"):
+                    with st.spinner("Scoring…"):
                         try:
                             msg["ragas_score"] = score_turn(question_text, msg["content"], contexts)
                             msg["ragas_error"] = None
@@ -1134,7 +1100,10 @@ elif st.session_state.screen == "chat":
                     "query":      prompt,
                     "session_id": session["api_session_id"],
                 }
-                resp = requests.post(f"{API}/chat/", json=payload, timeout=60)
+                # AgenticRAG chains up to 5 sequential LLM calls (analyze_query,
+                # route_task, specialist agent, validate, generate_response) plus
+                # retrieval, so 60s isn't always enough headroom for that path.
+                resp = requests.post(f"{API}/chat/", json=payload, timeout=150)
                 ph.empty()
                 if resp.ok:
                     data   = resp.json()

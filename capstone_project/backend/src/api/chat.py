@@ -24,7 +24,7 @@ from src.schema.validation import (
 )
 from docs.pipeline import get_vector_store
 
-load_dotenv(dotenv_path=Path(__file__).parents[2] / ".env", override=True)
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

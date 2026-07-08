@@ -29,8 +29,13 @@ class ChatResponse(BaseModel):
     query: str
     answer: str
     sources: list[str]
+    chunks: List[dict] = []
     intent: str
     intent_reason: str
+    intent_confidence: float = 0.0
+    llm_latency_ms: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 class ChatHistoryItem(BaseModel):

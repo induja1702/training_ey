@@ -112,14 +112,41 @@ class AgenticRAG:
     # ------------------------------------------------------------------
     # 2. Retrieve
     # ------------------------------------------------------------------
-    def retrieve(self, subquestions: list[str]) -> list[dict]:
+    def retrieve(self, subquestions: list[str], original_question: str | None = None) -> list[dict]:
         step_start = time.perf_counter()
         retrieved = []
         with tracing.start_span("agentic_rag.retrieve", {"num_subquestions": len(subquestions)}):
             for sub in subquestions:
                 with tracing.start_span("agentic_rag.retrieve.subquestion", {"subquestion_len": len(sub)}):
                     docs = self.vector_store.similarity_search(query=sub, k=self.top_k)
+                logger.debug("AgenticRAG.retrieve: subquestion=%.80s -> %d docs", sub, len(docs))
                 retrieved.append({"subquestion": sub, "docs": docs})
+
+            # Fallback: if query decomposition drifted too far from the
+            # document's own phrasing, every subquestion can come back empty
+            # even though the corpus has the answer. Retry once against the
+            # original, un-decomposed question rather than silently returning
+            # zero chunks — an empty "retrieved" here means empty sources/
+            # chunks downstream, and the LLM may fall back on citations
+            # leaked from conversation history instead of real evidence.
+            if original_question and all(not item["docs"] for item in retrieved):
+                with tracing.start_span("agentic_rag.retrieve.fallback_original_question"):
+                    fallback_docs = self.vector_store.similarity_search(
+                        query=original_question, k=self.top_k
+                    )
+                if fallback_docs:
+                    logger.info(
+                        "AgenticRAG.retrieve: all %d subquestions returned 0 docs; "
+                        "fallback on original question returned %d docs.",
+                        len(subquestions), len(fallback_docs),
+                    )
+                    retrieved.append({"subquestion": original_question, "docs": fallback_docs})
+                else:
+                    logger.warning(
+                        "AgenticRAG.retrieve: subquestions and fallback on original "
+                        "question both returned 0 docs for: %.80s", original_question,
+                    )
+
         metrics.record_agent_step("agentic_rag", "retrieve", time.perf_counter() - step_start)
         return retrieved
 
@@ -406,7 +433,7 @@ Return ONLY valid JSON in this exact shape:
 
         with tracing.start_span("agentic_rag.run", {"question_len": len(question)}):
             subquestions = self.analyze_query(question)
-            retrieved    = self.retrieve(subquestions)
+            retrieved    = self.retrieve(subquestions, original_question=question)
             sources      = self._build_sources(retrieved)
             context      = self._build_context(sources)
 
