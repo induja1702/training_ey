@@ -65,3 +65,20 @@ class DocumentStatus(BaseModel):
 class DocumentListResponse(BaseModel):
     count: int
     documents: List[DocumentStatus]
+
+
+class RateLimitError(BaseModel):
+    """Response body returned with HTTP 429 Too Many Requests.
+
+    Matches the JSON shape produced by :class:`RateLimiterMiddleware`:
+
+    .. code-block:: json
+
+        {
+            "detail": "Rate limit exceeded. Try again in 42 second(s).",
+            "retry_after": 42
+        }
+    """
+
+    detail: str
+    retry_after: int

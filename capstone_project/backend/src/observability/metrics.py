@@ -179,6 +179,17 @@ UPLOAD_ERRORS = Counter(
 
 
 # ============================================================================
+# 9. RATE LIMITER METRICS
+# ============================================================================
+
+RATE_LIMIT_EXCEEDED = Counter(
+    "rate_limit_exceeded_total",
+    "Number of requests rejected by the sliding-window rate limiter",
+    ["route"],  # route: /chat, /upload, or "" (global fallback)
+)
+
+
+# ============================================================================
 # 6. SESSION & STATE MANAGEMENT METRICS
 # ============================================================================
 

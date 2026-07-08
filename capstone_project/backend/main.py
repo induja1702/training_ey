@@ -18,6 +18,7 @@ from src.api.upload_api import router as upload_router
 from src.api.chat import router as chat_router
 from src.observability.langsmith import tracing_context, _get_client, _get_project_name, is_enabled
 from src.observability.telemetry import setup_observability
+from src.middleware.rate_limiter import RateLimiterMiddleware, SlidingWindowStore
 
 
 class LangSmithRequestTracingMiddleware(BaseHTTPMiddleware):
@@ -50,11 +51,28 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-app.add_middleware(
-    LangSmithRequestTracingMiddleware,
-)
+# ---------------------------------------------------------------------------
+# Middleware stack
+# ---------------------------------------------------------------------------
+# FastAPI applies middleware in *reverse* registration order (LIFO).
+# Runtime execution order (outermost → innermost):
+#   1. CORSMiddleware          — OPTIONS pre-flights resolved before rate-checking
+#   2. RateLimiterMiddleware   — reject abusive clients with HTTP 429
+#   3. LangSmithRequestTracingMiddleware — trace allowed requests only
+#   4. Prometheus Instrumentator        — counts all responses incl. 429s
+# ---------------------------------------------------------------------------
 
+# 4 — registered first → innermost at runtime
+app.add_middleware(LangSmithRequestTracingMiddleware)
+
+# Prometheus instrumentator wraps the app core (counts 429s from the limiter).
 Instrumentator().instrument(app).expose(app)
+
+# 2 — rate limiter (registered after LangSmith → executes before LangSmith)
+_rate_limit_store = SlidingWindowStore()
+app.add_middleware(RateLimiterMiddleware, store=_rate_limit_store)
+
+# 1 — CORS registered last → outermost at runtime (handles preflight OPTIONS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Streamlit dev origin
